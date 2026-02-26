@@ -5,13 +5,16 @@ Desktop GUI for your radio recording system.
 ## What it does
 
 - Shows station status in a table (RECORDING / WARMUP / NO WRITE / NO AUDIO / STARTING).
-- Runs Python backend supervisor in the background (`app/rc_backend_service.py`) and falls back to monitor scripts only if needed.
+- Runs Python backend supervisor in the background (`app/rc_backend_service.py`).
+- Backend is hardened for 24/7 uptime with auto-restart/backoff on worker exits/start failures.
+- Backend auto-recovers stalled workers (alive process but no new audio writes) and keeps main loop alive after sync exceptions.
 - Stops monitor/worker/ffmpeg background processes from the GUI.
 - Refreshes status automatically every 5 seconds.
 - Adds stations from GUI with validation.
 - Removes selected stations directly from GUI.
 - Shows per-station issue analysis from latest log lines.
 - Opens selected station log file directly from GUI.
+- On initial app open (before first start), stations show `IDLE` and error signals are suppressed.
 
 ## Runtime layout
 
@@ -49,8 +52,7 @@ Or manually:
 ## Batch relevancy with GUI
 
 - Primary backend: `app/rc_backend_service.py`.
-- Fallback backend: `scripts/radio_master.bat` (legacy monitor path).
-- GUI is sufficient for daily operations; helper batch scripts are no longer required.
+- `scripts/radio_master.bat` is legacy and not required for normal GUI operation.
 
 ## Security hardening in app
 

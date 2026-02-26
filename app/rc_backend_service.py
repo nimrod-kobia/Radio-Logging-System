@@ -6,11 +6,20 @@ import time
 from datetime import date, timedelta, datetime
 from pathlib import Path
 
-from rc_config import LOGS, MONITOR_PID_FILE, RECORDINGS, is_windows, safe_station_name
+from rc_config import (
+    LOGS,
+    MONITOR_PID_FILE,
+    RECORDINGS,
+    WARMUP_SECONDS,
+    WRITE_STALE_SECONDS,
+    is_windows,
+    safe_station_name,
+)
 from rc_station_store import read_stations
 
 SERVICE_LOG = LOGS / "service.log"
 SYNC_SECONDS = 5
+STALE_RESTART_SECONDS = max(300, WRITE_STALE_SECONDS * 3)
 
 if is_windows():
     FFMPEG_BIN = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
@@ -38,6 +47,7 @@ class WorkerManager:
     def __init__(self):
         self.workers: dict[str, tuple[subprocess.Popen, object]] = {}
         self.restart_state: dict[str, tuple[int, float]] = {}
+        self.worker_started_at: dict[str, float] = {}
 
     @staticmethod
     def restart_backoff_seconds(fail_count: int) -> int:
@@ -170,8 +180,34 @@ class WorkerManager:
     def log_service(message: str):
         LOGS.mkdir(parents=True, exist_ok=True)
         line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n"
-        with SERVICE_LOG.open("a", encoding="utf-8") as handle:
-            handle.write(line)
+        try:
+            with SERVICE_LOG.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError:
+            pass
+
+    @staticmethod
+    def latest_write_age_seconds(station_dir: Path, now_ts: float) -> float | None:
+        today = date.today()
+        days_to_check = [today, today - timedelta(days=1), today + timedelta(days=1)]
+        newest_mtime: float | None = None
+
+        for target_day in days_to_check:
+            day_dir = station_dir / f"{target_day.year:04d}" / f"{target_day.month:02d}" / f"{target_day.day:02d}"
+            if not day_dir.exists():
+                continue
+
+            for mp3_file in day_dir.glob("*.mp3"):
+                try:
+                    mtime = mp3_file.stat().st_mtime
+                except OSError:
+                    continue
+                if newest_mtime is None or mtime > newest_mtime:
+                    newest_mtime = mtime
+
+        if newest_mtime is None:
+            return None
+        return max(0.0, now_ts - newest_mtime)
 
     def start_worker(self, station_name: str, stream: str):
         if station_name in self.workers:
@@ -185,16 +221,25 @@ class WorkerManager:
         extra_kwargs = {"start_new_session": True} if not is_windows() else {}
 
         log_handle = log_path.open("a", encoding="utf-8")
-        proc = subprocess.Popen(
-            self.ffmpeg_command(stream, station_dir),
-            stdin=subprocess.DEVNULL,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            creationflags=creationflags,
-            **extra_kwargs,
-        )
+        try:
+            proc = subprocess.Popen(
+                self.ffmpeg_command(stream, station_dir),
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+                **extra_kwargs,
+            )
+        except Exception as exc:
+            try:
+                log_handle.close()
+            except OSError:
+                pass
+            self.log_service(f"START_FAIL worker {station_name}: {exc}")
+            raise
 
         self.workers[station_name] = (proc, log_handle)
+        self.worker_started_at[station_name] = time.time()
         pid_path.write_text(str(proc.pid), encoding="utf-8")
         self.log_service(f"START worker {station_name} pid={proc.pid}")
 
@@ -225,6 +270,9 @@ class WorkerManager:
 
         if station_name in self.workers:
             del self.workers[station_name]
+
+        if station_name in self.worker_started_at:
+            del self.worker_started_at[station_name]
 
         if log_handle is not None:
             try:
@@ -274,7 +322,17 @@ class WorkerManager:
                     fail_count, next_retry = state
                     if now_ts < next_retry:
                         continue
-                self.start_worker(station_name, stream)
+                try:
+                    self.start_worker(station_name, stream)
+                except Exception:
+                    prev_fail_count, _next_retry = self.restart_state.get(station_name, (0, 0.0))
+                    fail_count = prev_fail_count + 1
+                    backoff = self.restart_backoff_seconds(fail_count)
+                    next_retry = now_ts + backoff
+                    self.restart_state[station_name] = (fail_count, next_retry)
+                    self.log_service(
+                        f"RESTART_DELAY worker {station_name} (start_failed, fail_count={fail_count}, retry_in={backoff}s)"
+                    )
                 continue
 
             proc, _log_handle = worker
@@ -290,6 +348,39 @@ class WorkerManager:
                     f"RESTART_DELAY worker {station_name} (exit={exit_code}, fail_count={fail_count}, retry_in={backoff}s)"
                 )
             else:
+                age_seconds = self.latest_write_age_seconds(station_dir, now_ts)
+                started_at = self.worker_started_at.get(station_name, now_ts)
+                worker_age = max(0.0, now_ts - started_at)
+                warmup_grace = max(120, WARMUP_SECONDS * 2)
+
+                if (
+                    worker_age > warmup_grace
+                    and age_seconds is not None
+                    and age_seconds > STALE_RESTART_SECONDS
+                ):
+                    self.stop_worker(station_name)
+                    prev_fail_count, _next_retry = self.restart_state.get(station_name, (0, 0.0))
+                    fail_count = prev_fail_count + 1
+                    backoff = self.restart_backoff_seconds(fail_count)
+                    next_retry = now_ts + backoff
+                    self.restart_state[station_name] = (fail_count, next_retry)
+                    self.log_service(
+                        f"STALL_RESTART worker {station_name} (no_write_for={int(age_seconds)}s, fail_count={fail_count}, retry_in={backoff}s)"
+                    )
+                    continue
+
+                if worker_age > warmup_grace and age_seconds is None:
+                    self.stop_worker(station_name)
+                    prev_fail_count, _next_retry = self.restart_state.get(station_name, (0, 0.0))
+                    fail_count = prev_fail_count + 1
+                    backoff = self.restart_backoff_seconds(fail_count)
+                    next_retry = now_ts + backoff
+                    self.restart_state[station_name] = (fail_count, next_retry)
+                    self.log_service(
+                        f"STALL_RESTART worker {station_name} (no_output_after_start, fail_count={fail_count}, retry_in={backoff}s)"
+                    )
+                    continue
+
                 if station_name in self.restart_state:
                     del self.restart_state[station_name]
 
@@ -338,7 +429,10 @@ def main() -> int:
 
     try:
         while RUNNING:
-            manager.sync()
+            try:
+                manager.sync()
+            except Exception as exc:
+                manager.log_service(f"SYNC_ERROR {exc.__class__.__name__}: {exc}")
             time.sleep(SYNC_SECONDS)
     finally:
         manager.stop_all()
