@@ -1,7 +1,0 @@
-[tls @ 00000142933ef500] Error in the pull function.
-[tls @ 00000142933ef500] IO error: Error number -10054 occurred
-[https @ 00000142933e6240] Will reconnect at 1967335 in 0 second(s), error=Error number -10054 occurred.
-[tcp @ 00000142933ef040] Failed to resolve hostname dreamsiteradiocp5.com: The name does not resolve for the supplied parameters
-[https @ 00000142933e6240] Will reconnect at 0 in 0 second(s).
-[tcp @ 00000142933ef6c0] Failed to resolve hostname dreamsiteradiocp5.com: The name does not resolve for the supplied parameters
-[https @ 00000142933e6240] Will reconnect at 0 in 1 second(s).

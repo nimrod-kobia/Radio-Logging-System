@@ -1,7 +1,0 @@
-[tls @ 000002c60da847c0] Error in the pull function.
-[tls @ 000002c60da847c0] IO error: Error number -138 occurred
-[https @ 000002c60bcfa240] Will reconnect at 3936229 in 0 second(s), error=Error number -138 occurred.
-[tcp @ 000002c60da84080] Failed to resolve hostname stream-178.zeno.fm: The name does not resolve for the supplied parameters
-[https @ 000002c60bcfa240] Will reconnect at 0 in 0 second(s).
-[tcp @ 000002c60da84880] Failed to resolve hostname stream-178.zeno.fm: The name does not resolve for the supplied parameters
-[https @ 000002c60bcfa240] Will reconnect at 0 in 1 second(s).

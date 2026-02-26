@@ -1,9 +1,0 @@
-[tls @ 000001f80828a440] Error in the pull function.
-[tls @ 000001f80828a440] IO error: Error number -10054 occurred
-[https @ 000001f80828a100] Will reconnect at 5460635 in 0 second(s), error=Error number -10054 occurred.
-[tcp @ 000001f80828a600] Failed to resolve hostname chikunir.radioca.st: The name does not resolve for the supplied parameters
-[https @ 000001f80828a100] Will reconnect at 0 in 0 second(s).
-[tcp @ 000001f80828a540] Failed to resolve hostname chikunir.radioca.st: The name does not resolve for the supplied parameters
-[https @ 000001f80828a100] Will reconnect at 0 in 1 second(s).
-[mp3float @ 000001f808804f40] Header missing
-[aist#0:0/mp3 @ 000001f808725f40] [dec:mp3float @ 000001f8088049c0] Error submitting packet to decoder: Invalid data found when processing input

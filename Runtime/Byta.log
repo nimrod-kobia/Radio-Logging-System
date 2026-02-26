@@ -1,7 +1,0 @@
-[tls @ 0000021f91bd5780] Error in the pull function.
-[tls @ 0000021f91bd5780] IO error: Error number -10054 occurred
-[https @ 0000021f91bd61c0] Will reconnect at 3953733 in 0 second(s), error=Error number -10054 occurred.
-[tcp @ 0000021f91c88d40] Failed to resolve hostname s13.myradiostream.com: The name does not resolve for the supplied parameters
-[https @ 0000021f91bd61c0] Will reconnect at 0 in 0 second(s).
-[tcp @ 0000021f91c88e00] Failed to resolve hostname s13.myradiostream.com: The name does not resolve for the supplied parameters
-[https @ 0000021f91bd61c0] Will reconnect at 0 in 1 second(s).
