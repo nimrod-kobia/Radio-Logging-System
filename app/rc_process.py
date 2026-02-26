@@ -9,8 +9,6 @@ from rc_config import (
     ROOT,
     LOGS,
     MONITOR_PID_FILE,
-    RADIO_MASTER_BAT,
-    RADIO_MASTER_SH,
     is_windows,
 )
 
@@ -29,13 +27,75 @@ def process_exists(pid: int) -> bool:
     return True
 
 
+def _win_hidden_flags() -> int:
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _run_quiet(command: list[str], timeout: int = 8):
+    kwargs: dict = {
+        "check": False,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "timeout": timeout,
+    }
+    if is_windows():
+        kwargs["creationflags"] = _win_hidden_flags()
+    try:
+        subprocess.run(command, **kwargs)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _run_quiet_nowait(command: list[str]):
+    kwargs: dict = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if is_windows():
+        kwargs["creationflags"] = _win_hidden_flags()
+    try:
+        subprocess.Popen(command, **kwargs)
+    except OSError:
+        pass
+
+
+def backend_service_pids() -> list[int]:
+    if is_windows():
+        command = (
+            "$procs=Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" -ErrorAction SilentlyContinue; "
+            "$hits=$procs | Where-Object { $_.Name -match '^python(w)?\\.exe$' -and $_.CommandLine -and $_.CommandLine -match 'rc_backend_service\\.py' }; "
+            "$hits | ForEach-Object { $_.ProcessId }"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                capture_output=True,
+                text=True,
+                creationflags=_win_hidden_flags(),
+                timeout=3,
+            )
+        except subprocess.TimeoutExpired:
+            return []
+        pids: list[int] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.isdigit():
+                pids.append(int(line))
+        return pids
+
+    result = subprocess.run(["pgrep", "-f", "rc_backend_service.py"], capture_output=True, text=True)
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            pids.append(int(line))
+    return pids
+
+
 def monitor_command() -> list[str] | None:
     if BACKEND_SERVICE.exists():
         return [sys.executable, str(BACKEND_SERVICE)]
-    if is_windows() and RADIO_MASTER_BAT.exists():
-        return ["cmd", "/c", str(RADIO_MASTER_BAT)]
-    if (not is_windows()) and RADIO_MASTER_SH.exists():
-        return ["bash", str(RADIO_MASTER_SH)]
     return None
 
 
@@ -62,18 +122,27 @@ def clear_monitor_pid():
 
 def is_monitor_running() -> bool:
     pid = read_monitor_pid()
-    if pid is None:
-        return False
-    running = process_exists(pid)
-    if not running:
+    if pid is not None:
+        if process_exists(pid):
+            return True
         clear_monitor_pid()
-    return running
+
+    service_pids = backend_service_pids()
+    if service_pids:
+        write_monitor_pid(service_pids[0])
+        return True
+    return False
 
 
 def start_monitor() -> str | None:
     command = monitor_command()
     if command is None:
         return "No backend found. Expected app/rc_backend_service.py or fallback monitor scripts."
+
+    existing = backend_service_pids()
+    if existing:
+        write_monitor_pid(existing[0])
+        return None
 
     if is_monitor_running():
         return None
@@ -85,7 +154,7 @@ def start_monitor() -> str | None:
         "stderr": subprocess.DEVNULL,
     }
     if is_windows():
-        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        popen_kwargs["creationflags"] = _win_hidden_flags()
     else:
         popen_kwargs["start_new_session"] = True
 
@@ -95,17 +164,20 @@ def start_monitor() -> str | None:
 
 
 def stop_background():
+    for service_pid in set(backend_service_pids()):
+        try:
+            if is_windows():
+                _run_quiet_nowait(["taskkill", "/F", "/T", "/PID", str(service_pid)])
+            else:
+                os.kill(service_pid, signal.SIGTERM)
+        except OSError:
+            pass
+
     pid = read_monitor_pid()
     if pid and process_exists(pid):
         try:
             if is_windows():
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+                _run_quiet_nowait(["taskkill", "/F", "/T", "/PID", str(pid)])
             else:
                 os.kill(pid, signal.SIGTERM)
         except OSError:
@@ -113,16 +185,10 @@ def stop_background():
 
     try:
         if is_windows():
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "ffmpeg.exe"],
-                check=False,
-                capture_output=True,
-                text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            _run_quiet_nowait(["taskkill", "/F", "/IM", "ffmpeg.exe"])
         else:
-            subprocess.run(["pkill", "-f", "ffmpeg"], check=False, capture_output=True, text=True)
-    except OSError:
+            _run_quiet(["pkill", "-f", "ffmpeg"])
+    except (subprocess.TimeoutExpired, OSError):
         pass
 
     for pid_file in LOGS.glob("*.pid"):
