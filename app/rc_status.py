@@ -146,7 +146,6 @@ def build_station_status(station_name: str) -> tuple[str, str, str, str]:
 
     age_seconds = int(time.time() - stat.st_mtime)
     size = stat.st_size
-    size_text = format_size(size)
     filename = latest.name
 
     if size == 0 and age_seconds <= WARMUP_SECONDS:
@@ -156,6 +155,6 @@ def build_station_status(station_name: str) -> tuple[str, str, str, str]:
         return "NO AUDIO", f"{filename} empty for {age_seconds}s", filename, issue
 
     if age_seconds <= WRITE_STALE_SECONDS:
-        return "RECORDING", f"{filename} updated {age_seconds}s ago, {size_text}", filename, "-"
+        return "RECORDING", f"{filename} updated {age_seconds}s ago", filename, "-"
 
-    return "NO WRITE", f"{filename} last update {age_seconds}s ago, {size_text}", filename, issue
+    return "NO WRITE", f"{filename} last update {age_seconds}s ago", filename, issue
