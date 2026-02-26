@@ -9,7 +9,7 @@ from rc_logs import station_log_path
 from rc_power import PowerManager
 from rc_process import is_monitor_running, open_path, start_monitor, stop_background
 from rc_station_store import read_stations, validate_station, write_stations_atomic
-from rc_status import build_station_status, list_day_files
+from rc_status import build_station_status, day_file_display_entries
 
 
 class RadioControlApp:
@@ -28,6 +28,7 @@ class RadioControlApp:
         self.day_title_var = tk.StringVar(value="Day files: Today")
         self.power_manager = PowerManager()
         self.keep_awake_enabled = self.power_manager.enable_keep_awake()
+        self.system_started = is_monitor_running()
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -71,8 +72,24 @@ class RadioControlApp:
         ttk.Button(day_bar, text="Tomorrow", command=lambda: self.set_day_offset(1)).pack(side="left")
         ttk.Label(day_bar, textvariable=self.day_title_var).pack(side="left", padx=(16, 0))
 
-        self.day_files_list = tk.Listbox(day_bar, height=5)
-        self.day_files_list.pack(fill="x", expand=True, pady=(8, 0))
+        day_list_frame = ttk.Frame(day_bar)
+        day_list_frame.pack(fill="both", expand=True, pady=(8, 0))
+
+        day_yscroll = ttk.Scrollbar(day_list_frame, orient="vertical")
+        day_xscroll = ttk.Scrollbar(day_list_frame, orient="horizontal")
+
+        self.day_files_list = tk.Listbox(
+            day_list_frame,
+            height=5,
+            yscrollcommand=day_yscroll.set,
+            xscrollcommand=day_xscroll.set,
+        )
+        day_yscroll.config(command=self.day_files_list.yview)
+        day_xscroll.config(command=self.day_files_list.xview)
+
+        day_xscroll.pack(side="bottom", fill="x")
+        day_yscroll.pack(side="right", fill="y")
+        self.day_files_list.pack(side="left", fill="both", expand=True)
 
         info = ttk.Label(
             self.root,
@@ -100,9 +117,11 @@ class RadioControlApp:
         self.tree.column("latest", width=220, anchor="w")
 
         yscroll = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=yscroll.set)
+        xscroll = ttk.Scrollbar(table_wrap, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
 
+        xscroll.pack(side="bottom", fill="x")
         self.tree.pack(side="left", fill="both", expand=True)
         yscroll.pack(side="right", fill="y")
 
@@ -147,6 +166,7 @@ class RadioControlApp:
             self.log_action("Monitor already running")
         else:
             self.log_action("Monitor started in background")
+        self.system_started = True
         time.sleep(1)
         self.refresh_statuses()
 
@@ -233,15 +253,15 @@ class RadioControlApp:
             self.day_title_var.set("Day files: select a station")
             return
 
-        day_label, files = list_day_files(station_name, self.day_offset)
+        day_label, entries = day_file_display_entries(station_name, self.day_offset)
         self.day_title_var.set(f"Day files for {station_name}: {day_label}")
 
-        if not files:
+        if not entries:
             self.day_files_list.insert(tk.END, "No files for this day yet.")
             return
 
-        for item in files[:200]:
-            self.day_files_list.insert(tk.END, item.name)
+        for entry in entries[:200]:
+            self.day_files_list.insert(tk.END, entry)
 
     def open_selected_log(self):
         station_name = self.selected_station_name()
@@ -278,6 +298,23 @@ class RadioControlApp:
             self.tree.delete(row)
 
         stations = read_stations()
+
+        if running:
+            self.system_started = True
+
+        if not self.system_started:
+            for station_name, _stream in stations:
+                self.tree.insert(
+                    "",
+                    "end",
+                    values=(station_name, "IDLE", "-", "Press Start Monitor to begin", "-"),
+                )
+            self.day_files_list.delete(0, tk.END)
+            self.day_title_var.set("Day files: system not started")
+            self.last_refresh_var.set(f"Last refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            self.refresh_job = self.root.after(REFRESH_INTERVAL_MS, self.refresh_statuses)
+            return
+
         for station_name, _stream in stations:
             status, detail, latest, issue = build_station_status(station_name)
             self.tree.insert("", "end", values=(station_name, status, issue, detail, latest))

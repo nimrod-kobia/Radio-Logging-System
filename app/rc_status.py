@@ -1,5 +1,6 @@
+import re
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from rc_config import RECORDINGS, WARMUP_SECONDS, WRITE_STALE_SECONDS, safe_station_name
@@ -50,14 +51,84 @@ def day_folder(station_name: str, day_offset: int = 0) -> tuple[str, Path]:
     return target_day.strftime("%Y-%m-%d"), folder
 
 
+_FNAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})\.mp3$")
+
+
+def _parse_fname_dt(name: str) -> datetime | None:
+    m = _FNAME_RE.match(name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d-%H-%M-%S")
+    except ValueError:
+        return None
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, mins = divmod(minutes, 60)
+    return f"{hours}h {mins:02d}m {secs:02d}s"
+
+
 def list_day_files(station_name: str, day_offset: int = 0) -> tuple[str, list[Path]]:
     day_label, folder = day_folder(station_name, day_offset)
     if not folder.exists():
         return day_label, []
 
     files = [f for f in folder.glob("*.mp3") if f.is_file()]
-    files.sort(key=lambda p: p.name, reverse=True)
+    files.sort(key=lambda p: p.name)
     return day_label, files
+
+
+def day_file_display_entries(station_name: str, day_offset: int = 0) -> tuple[str, list[str]]:
+    """Return (day_label, list of human-readable display strings) for the day view listbox."""
+    day_label, files = list_day_files(station_name, day_offset)
+    if not files:
+        return day_label, []
+
+    now = datetime.now()
+    entries: list[str] = []
+
+    for i, fp in enumerate(files):
+        start_dt = _parse_fname_dt(fp.name)
+
+        # Determine end: next file's start time, or now for last file
+        if i + 1 < len(files):
+            end_dt = _parse_fname_dt(files[i + 1].name)
+        else:
+            end_dt = None
+
+        if start_dt is not None and end_dt is not None:
+            duration_str = _format_duration((end_dt - start_dt).total_seconds())
+        elif start_dt is not None:
+            # Last/active file: use mtime as end estimate
+            try:
+                mtime = fp.stat().st_mtime
+                elapsed = time.time() - start_dt.timestamp()
+                duration_str = _format_duration(elapsed) + " (ongoing)"
+            except OSError:
+                duration_str = "?"
+        else:
+            duration_str = "?"
+
+        try:
+            size_str = format_size(fp.stat().st_size)
+        except OSError:
+            size_str = "?"
+
+        if start_dt is not None:
+            time_str = start_dt.strftime("%H:%M:%S")
+        else:
+            time_str = fp.name
+
+        entries.append(f"{time_str}  |  {duration_str}  |  {size_str}  |  {fp.name}")
+
+    return day_label, entries
 
 
 def build_station_status(station_name: str) -> tuple[str, str, str, str]:
@@ -66,7 +137,7 @@ def build_station_status(station_name: str) -> tuple[str, str, str, str]:
 
     latest = latest_file(station_name)
     if latest is None:
-        return "STARTING", "no mp3 files yet", "-", issue
+        return "STARTING", "no mp3 files yet", "-", "-"
 
     try:
         stat = latest.stat()
@@ -79,12 +150,12 @@ def build_station_status(station_name: str) -> tuple[str, str, str, str]:
     filename = latest.name
 
     if size == 0 and age_seconds <= WARMUP_SECONDS:
-        return "WARMUP", f"{filename} empty for {age_seconds}s", filename, issue
+        return "WARMUP", f"{filename} empty for {age_seconds}s", filename, "-"
 
     if size == 0:
         return "NO AUDIO", f"{filename} empty for {age_seconds}s", filename, issue
 
     if age_seconds <= WRITE_STALE_SECONDS:
-        return "RECORDING", f"{filename} updated {age_seconds}s ago, {size_text}", filename, issue
+        return "RECORDING", f"{filename} updated {age_seconds}s ago, {size_text}", filename, "-"
 
     return "NO WRITE", f"{filename} last update {age_seconds}s ago, {size_text}", filename, issue
