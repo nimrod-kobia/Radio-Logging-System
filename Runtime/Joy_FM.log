@@ -1,0 +1,7 @@
+[http @ 000001c8459e6140] Will reconnect at 5757175 in 0 second(s), error=Error number -10054 occurred.
+[tcp @ 000001c8459e5fc0] Failed to resolve hostname s2.yesstreaming.net: The name does not resolve for the supplied parameters
+[http @ 000001c8459e6140] Will reconnect at 0 in 0 second(s).
+[tcp @ 000001c8459e5fc0] Failed to resolve hostname s2.yesstreaming.net: The name does not resolve for the supplied parameters
+[http @ 000001c8459e6140] Will reconnect at 0 in 1 second(s).
+[mp3float @ 000001c845a283c0] Header missing
+[aist#0:0/mp3 @ 000001c8459e4b00] [dec:mp3float @ 000001c845a0e6c0] Error submitting packet to decoder: Invalid data found when processing input

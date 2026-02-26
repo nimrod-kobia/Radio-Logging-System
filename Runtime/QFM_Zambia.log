@@ -1,0 +1,33 @@
+[tls @ 000001d5271fe700] Error in the pull function.
+[tls @ 000001d5271fe700] IO error: Error number -138 occurred
+[https @ 000001d5271f97c0] Will reconnect at 5523667 in 0 second(s), error=Error number -138 occurred.
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[tls @ 000001d5271fe540] Error in the pull function.
+[tls @ 000001d5271fe540] IO error: End of file
+[https @ 000001d5271f97c0] Stream ends prematurely at 675769, should be 18446744073709551615
+[https @ 000001d5271f97c0] Will reconnect at 675769 in 0 second(s), error=I/O error.
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input
+[mp3float @ 000001d52779f080] Header missing
+[aist#0:0/mp3 @ 000001d527203cc0] [dec:mp3float @ 000001d52779ea00] Error submitting packet to decoder: Invalid data found when processing input

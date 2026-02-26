@@ -1,0 +1,26 @@
+[2026-02-26 11:06:19] Service boot
+[2026-02-26 11:06:19] START worker ZNBC_Radio_1 pid=14800
+[2026-02-26 11:06:19] START worker ZNBC_Radio_2 pid=15216
+[2026-02-26 11:06:19] START worker ZNBC_Radio_4 pid=23084
+[2026-02-26 11:06:19] START worker Radio_Phoenix pid=5220
+[2026-02-26 11:06:19] START worker Hot_FM_Lusaka pid=1556
+[2026-02-26 11:06:19] START worker Hone_FM pid=14228
+[2026-02-26 11:06:19] START worker QFM_Zambia pid=8568
+[2026-02-26 11:06:19] START worker Power_FM_Kabwe pid=24676
+[2026-02-26 11:06:19] START worker Power_FM_Lusaka pid=7420
+[2026-02-26 11:06:19] START worker Millennium_Radio pid=14824
+[2026-02-26 11:06:19] START worker Joy_FM pid=20888
+[2026-02-26 11:06:19] START worker Breeze_FM_Chipata pid=7220
+[2026-02-26 11:06:19] START worker Radio_Liseli pid=11912
+[2026-02-26 11:06:19] START worker Sun_FM pid=12872
+[2026-02-26 11:06:19] START worker Chikuni_Radio pid=15840
+[2026-02-26 11:06:19] START worker Kasama_Radio pid=14740
+[2026-02-26 11:06:19] START worker Mano_FM pid=22692
+[2026-02-26 11:06:20] START worker KNC_Radio pid=4336
+[2026-02-26 11:06:20] START worker Chimwemwe_Radio pid=20340
+[2026-02-26 11:06:20] START worker Byta pid=13472
+[2026-02-26 11:06:20] START worker Capital_FM pid=24344
+[2026-02-26 11:06:20] START worker Christian_Voice pid=25976
+[2026-02-26 11:06:20] START worker Five_FM pid=4432
+[2026-02-26 11:06:20] START worker Radio_Maria pid=16076
+[2026-02-26 11:06:20] START worker Delight_FM pid=2056

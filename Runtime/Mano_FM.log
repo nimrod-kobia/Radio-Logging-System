@@ -1,0 +1,10 @@
+[tls @ 000001cd854e07c0] Error in the pull function.
+[tls @ 000001cd854e07c0] IO error: Error number -138 occurred
+[https @ 000001cd85059bc0] Will reconnect at 4400162 in 0 second(s), error=Error number -138 occurred.
+[tls @ 00000241c60e1200] Error in the pull function.
+[tls @ 00000241c60e1200] IO error: Error number -10054 occurred
+[https @ 00000241c608a740] Will reconnect at 5280488 in 0 second(s), error=Error number -10054 occurred.
+[tcp @ 00000241c60e0ac0] Failed to resolve hostname stream-166.zeno.fm: The name does not resolve for the supplied parameters
+[https @ 00000241c608a740] Will reconnect at 0 in 0 second(s).
+[tcp @ 00000241c60e0440] Failed to resolve hostname stream-166.zeno.fm: The name does not resolve for the supplied parameters
+[https @ 00000241c608a740] Will reconnect at 0 in 1 second(s).

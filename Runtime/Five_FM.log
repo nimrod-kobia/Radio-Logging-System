@@ -1,0 +1,7 @@
+[http @ 000001a5b148a340] Will reconnect at 3568502 in 0 second(s), error=Error number -10054 occurred.
+[tcp @ 000001a5b148ef00] Failed to resolve hostname ca9.rcast.net: The name does not resolve for the supplied parameters
+[http @ 000001a5b148a340] Will reconnect at 0 in 0 second(s).
+[tcp @ 000001a5b148f140] Failed to resolve hostname ca9.rcast.net: The name does not resolve for the supplied parameters
+[http @ 000001a5b148a340] Will reconnect at 0 in 1 second(s).
+[mp3float @ 000001a5b1491840] Header missing
+[aist#0:0/mp3 @ 000001a5b14a66c0] [dec:mp3float @ 000001a5b14b0e80] Error submitting packet to decoder: Invalid data found when processing input

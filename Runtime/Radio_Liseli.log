@@ -1,0 +1,9 @@
+[tls @ 000001382642ee40] Error in the pull function.
+[tls @ 000001382642ee40] IO error: Error number -10054 occurred
+[https @ 0000013826426240] Will reconnect at 4253481 in 0 second(s), error=Error number -10054 occurred.
+[tcp @ 000001382642f540] Failed to resolve hostname node.stream-africa.com: The name does not resolve for the supplied parameters
+[https @ 0000013826426240] Will reconnect at 0 in 0 second(s).
+[tcp @ 000001382642ef40] Failed to resolve hostname node.stream-africa.com: The name does not resolve for the supplied parameters
+[https @ 0000013826426240] Will reconnect at 0 in 1 second(s).
+[mp3float @ 0000013826992000] Header missing
+[aist#0:0/mp3 @ 0000013826957980] [dec:mp3float @ 0000013826910f80] Error submitting packet to decoder: Invalid data found when processing input

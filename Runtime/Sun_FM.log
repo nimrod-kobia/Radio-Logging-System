@@ -1,0 +1,7 @@
+[tls @ 0000025768da6240] Error in the pull function.
+[tls @ 0000025768da6240] IO error: Error number -10054 occurred
+[https @ 0000025768da6180] Will reconnect at 5563850 in 0 second(s), error=Error number -10054 occurred.
+[tcp @ 000002576a9f4dc0] Failed to resolve hostname c42.radioboss.fm: The name does not resolve for the supplied parameters
+[https @ 0000025768da6180] Will reconnect at 0 in 0 second(s).
+[tcp @ 000002576a9f4dc0] Failed to resolve hostname c42.radioboss.fm: The name does not resolve for the supplied parameters
+[https @ 0000025768da6180] Will reconnect at 0 in 1 second(s).
