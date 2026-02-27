@@ -11,7 +11,7 @@ from rc_power import PowerManager
 from rc_preflight import PreflightReport, run_preflight_checks
 from rc_process import is_monitor_running, open_path, start_monitor, stop_background
 from rc_station_store import read_stations, validate_station, write_stations_atomic
-from rc_status import build_station_status, day_file_display_entries, format_size
+from rc_status import build_station_status, day_file_display_entries, format_size, list_day_files
 
 
 class RadioControlApp:
@@ -30,6 +30,7 @@ class RadioControlApp:
         self.station_name_var = tk.StringVar(value="")
         self.station_url_var = tk.StringVar(value="")
         self.day_offset = 0
+        self.day_files_paths = []
         self.day_title_var = tk.StringVar(value="Day files: Today")
         self.power_manager = PowerManager()
         self.keep_awake_enabled = self.power_manager.enable_keep_awake()
@@ -81,6 +82,7 @@ class RadioControlApp:
 
         ttk.Button(day_bar, text="Yesterday", command=lambda: self.set_day_offset(-1)).pack(side="left")
         ttk.Button(day_bar, text="Today", command=lambda: self.set_day_offset(0)).pack(side="left", padx=6)
+        ttk.Button(day_bar, text="Play Selected", command=self.play_selected_day_file).pack(side="left", padx=(8, 0))
         ttk.Label(day_bar, textvariable=self.day_title_var).pack(side="left", padx=(16, 0))
 
         day_list_frame = ttk.Frame(day_bar)
@@ -322,10 +324,12 @@ class RadioControlApp:
         station_name = self.selected_station_name()
 
         self.day_files_list.delete(0, tk.END)
+        self.day_files_paths = []
         if not station_name:
             self.day_title_var.set("Day files: select a station")
             return
 
+        _day_label_paths, files = list_day_files(station_name, self.day_offset)
         day_label, entries = day_file_display_entries(station_name, self.day_offset)
         self.day_title_var.set(f"Day files for {station_name}: {day_label}")
 
@@ -333,8 +337,41 @@ class RadioControlApp:
             self.day_files_list.insert(tk.END, "No files for this day yet.")
             return
 
+        self.day_files_paths = files[:200]
         for entry in entries[:200]:
             self.day_files_list.insert(tk.END, entry)
+
+    def play_selected_day_file(self):
+        station_name = self.selected_station_name()
+        if not station_name:
+            self.log_action("Play recording failed: no station selected")
+            messagebox.showerror("Play recording", "Select a station first.")
+            return
+
+        selection = self.day_files_list.curselection()
+        if not selection:
+            self.log_action("Play recording failed: no recording selected")
+            messagebox.showerror("Play recording", "Select a recording from Day files first.")
+            return
+
+        index = int(selection[0])
+        if index < 0 or index >= len(self.day_files_paths):
+            self.log_action("Play recording failed: invalid day-file selection")
+            messagebox.showerror("Play recording", "Selected row is not a recording file.")
+            return
+
+        target_file = self.day_files_paths[index]
+        if not target_file.exists():
+            self.log_action(f"Play recording failed: file missing {target_file.name}")
+            messagebox.showerror("Play recording", f"Recording file not found:\n{target_file}")
+            return
+
+        try:
+            open_path(target_file)
+            self.log_action(f"Playing recording: {target_file.name}")
+        except Exception as exc:
+            self.log_action(f"Play recording failed: {exc}")
+            messagebox.showerror("Play recording", f"Could not open recording file.\n{exc}")
 
     def open_selected_log(self):
         station_name = self.selected_station_name()

@@ -1,7 +1,14 @@
-/RadioRecordings
-/scripts
-/stations.txt
+RadioRecordings/
+Runtime/
+stations.txt
 
-# Runtime artifacts
+dist/
+
 *.log
 *.pid
+
+__pycache__/
+app/__pycache__/
+
+.env
+.env.*

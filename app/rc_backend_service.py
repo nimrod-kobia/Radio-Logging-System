@@ -121,6 +121,7 @@ def process_exists(pid: int) -> bool:
 class WorkerManager:
     def __init__(self):
         self.workers: dict[str, tuple[subprocess.Popen, object]] = {}
+        self.worker_streams: dict[str, str] = {}
         self.restart_state: dict[str, tuple[int, float]] = {}
         self.worker_started_at: dict[str, float] = {}
         self.station_metrics: dict[str, dict[str, object]] = {}
@@ -381,6 +382,7 @@ class WorkerManager:
             raise
 
         self.workers[station_name] = (proc, log_handle)
+        self.worker_streams[station_name] = stream
         self.worker_started_at[station_name] = time.time()
         pid_path.write_text(str(proc.pid), encoding="utf-8")
         metric = self.station_metric(station_name)
@@ -415,6 +417,9 @@ class WorkerManager:
 
         if station_name in self.workers:
             del self.workers[station_name]
+
+        if station_name in self.worker_streams:
+            del self.worker_streams[station_name]
 
         if station_name in self.worker_started_at:
             del self.worker_started_at[station_name]
@@ -471,6 +476,26 @@ class WorkerManager:
                     fail_count, next_retry = state
                     if now_ts < next_retry:
                         continue
+                try:
+                    self.start_worker(station_name, stream)
+                except Exception:
+                    prev_fail_count, _next_retry = self.restart_state.get(station_name, (0, 0.0))
+                    fail_count = prev_fail_count + 1
+                    backoff = self.restart_backoff_seconds(fail_count)
+                    next_retry = now_ts + backoff
+                    self.restart_state[station_name] = (fail_count, next_retry)
+                    self.note_restart(station_name, "start_failed")
+                    self.log_service(
+                        f"RESTART_DELAY worker {station_name} (start_failed, fail_count={fail_count}, retry_in={backoff}s)"
+                    )
+                continue
+
+            current_stream = self.worker_streams.get(station_name)
+            if current_stream is not None and current_stream != stream:
+                self.log_service(f"STREAM_CHANGE worker {station_name}: restarting with updated URL")
+                self.stop_worker(station_name)
+                if station_name in self.restart_state:
+                    del self.restart_state[station_name]
                 try:
                     self.start_worker(station_name, stream)
                 except Exception:
