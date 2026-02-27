@@ -92,5 +92,16 @@ if %RC% GEQ 8 (
 )
 
 echo Update applied successfully.
-echo You can now restart with "%TARGET%\LAUNCH_APP.bat"
+set "LAUNCH_BAT=%TARGET%\LAUNCH_APP.bat"
+if exist "%LAUNCH_BAT%" (
+    choice /C YN /N /M "Start app now? [Y/N]: "
+    if errorlevel 2 (
+        echo You can restart later with "%LAUNCH_BAT%"
+    ) else (
+        start "" "%LAUNCH_BAT%"
+        echo App launch requested.
+    )
+) else (
+    echo Launch file not found: "%LAUNCH_BAT%"
+)
 exit /b 0
