@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from rc_config import (
@@ -64,6 +65,36 @@ def _run_quiet_nowait(command: list[str]):
         subprocess.Popen(command, **kwargs)
     except OSError:
         pass
+
+
+def _windows_ffmpeg_worker_pids() -> list[int]:
+    if not is_windows():
+        return []
+
+    root_pattern = str(ROOT).replace("'", "''")
+    command = (
+        f"$root='{root_pattern}'; "
+        "$ff=Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" -ErrorAction SilentlyContinue; "
+        "$hits=$ff | Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($root) }; "
+        "$hits | ForEach-Object { $_.ProcessId }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+            capture_output=True,
+            text=True,
+            creationflags=_win_hidden_flags(),
+            timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        return []
+
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        value = line.strip()
+        if value.isdigit():
+            pids.append(int(value))
+    return pids
 
 
 def backend_service_pids() -> list[int]:
@@ -180,7 +211,7 @@ def stop_background():
     for service_pid in set(backend_service_pids()):
         try:
             if is_windows():
-                _run_quiet_nowait(["taskkill", "/F", "/T", "/PID", str(service_pid)])
+                _run_quiet(["taskkill", "/F", "/T", "/PID", str(service_pid)])
             else:
                 os.kill(service_pid, signal.SIGTERM)
         except OSError:
@@ -190,7 +221,7 @@ def stop_background():
     if pid and process_exists(pid):
         try:
             if is_windows():
-                _run_quiet_nowait(["taskkill", "/F", "/T", "/PID", str(pid)])
+                _run_quiet(["taskkill", "/F", "/T", "/PID", str(pid)])
             else:
                 os.kill(pid, signal.SIGTERM)
         except OSError:
@@ -198,7 +229,13 @@ def stop_background():
 
     try:
         if is_windows():
-            _run_quiet_nowait(["taskkill", "/F", "/IM", "ffmpeg.exe"])
+            for _ in range(3):
+                worker_pids = _windows_ffmpeg_worker_pids()
+                if not worker_pids:
+                    break
+                for ffmpeg_pid in worker_pids:
+                    _run_quiet(["taskkill", "/F", "/T", "/PID", str(ffmpeg_pid)], timeout=8)
+                time.sleep(0.4)
         else:
             _run_quiet(["pkill", "-f", "ffmpeg"])
     except (subprocess.TimeoutExpired, OSError):

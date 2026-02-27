@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 import webbrowser
 from datetime import datetime
@@ -34,8 +35,14 @@ class RadioControlApp:
         self.day_title_var = tk.StringVar(value="Day files: Today")
         self.power_manager = PowerManager()
         self.keep_awake_enabled = self.power_manager.enable_keep_awake()
-        self.system_started = is_monitor_running()
+        self.system_started = False
         self.preflight_report: PreflightReport | None = None
+        self.action_in_progress = False
+        self.action_progress_var = tk.StringVar(value="Idle")
+        self._action_spinner_job = None
+        self._action_spinner_frames = ("|", "/", "-", "\\")
+        self._action_spinner_index = 0
+        self._action_progress_base = "Working"
 
         self._build_ui()
         self.run_startup_checks(show_dialog=False)
@@ -56,9 +63,12 @@ class RadioControlApp:
         button_bar = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         button_bar.pack(fill="x")
 
-        ttk.Button(button_bar, text="Start Monitor (Background)", command=self.start_monitor_gui).pack(side="left")
-        ttk.Button(button_bar, text="Stop Background Processes", command=self.stop_background_gui).pack(side="left", padx=8)
-        ttk.Button(button_bar, text="Refresh Now", command=self.manual_refresh).pack(side="left")
+        self.start_button = ttk.Button(button_bar, text="Start Monitor (Background)", command=self.start_monitor_gui)
+        self.start_button.pack(side="left")
+        self.stop_button = ttk.Button(button_bar, text="Stop Background Processes", command=self.stop_background_gui)
+        self.stop_button.pack(side="left", padx=8)
+        ttk.Label(button_bar, textvariable=self.action_progress_var).pack(side="left", padx=(10, 0))
+        ttk.Button(button_bar, text="⟳", width=3, command=self.manual_refresh).pack(side="left", padx=(8, 0))
         ttk.Button(button_bar, text="Open Selected Log", command=self.open_selected_log).pack(side="left", padx=(8, 0))
         ttk.Button(button_bar, text="Run Self Check", command=lambda: self.run_startup_checks(show_dialog=True)).pack(side="left", padx=(8, 0))
 
@@ -171,6 +181,8 @@ class RadioControlApp:
         self.activity_list.yview_moveto(1.0)
 
     def manual_refresh(self):
+        if is_monitor_running():
+            self.system_started = True
         self.log_action("Refresh requested")
         self.refresh_statuses()
 
@@ -223,7 +235,50 @@ class RadioControlApp:
             else:
                 messagebox.showinfo("Startup self-check", details)
 
+    def _set_action_buttons_enabled(self, enabled: bool):
+        state = tk.NORMAL if enabled else tk.DISABLED
+        try:
+            self.start_button.config(state=state)
+            self.stop_button.config(state=state)
+        except tk.TclError:
+            pass
+
+    def _tick_action_spinner(self):
+        if not self.action_in_progress:
+            return
+        frame = self._action_spinner_frames[self._action_spinner_index]
+        self._action_spinner_index = (self._action_spinner_index + 1) % len(self._action_spinner_frames)
+        self.action_progress_var.set(f"{self._action_progress_base}... {frame}")
+        self._action_spinner_job = self.root.after(180, self._tick_action_spinner)
+
+    def _set_action_in_progress(self, in_progress: bool, base_label: str = "Working"):
+        self.action_in_progress = in_progress
+        self._set_action_buttons_enabled(not in_progress)
+        if in_progress:
+            self._action_progress_base = base_label
+            self._action_spinner_index = 0
+            if self._action_spinner_job is not None:
+                try:
+                    self.root.after_cancel(self._action_spinner_job)
+                except tk.TclError:
+                    pass
+                self._action_spinner_job = None
+            self._tick_action_spinner()
+        else:
+            if self._action_spinner_job is not None:
+                try:
+                    self.root.after_cancel(self._action_spinner_job)
+                except tk.TclError:
+                    pass
+                self._action_spinner_job = None
+            running = is_monitor_running()
+            self.action_progress_var.set("Recording" if running else "Idle")
+
     def start_monitor_gui(self):
+        if self.action_in_progress:
+            self.log_action("Start ignored: action already in progress")
+            return
+
         self.run_startup_checks(show_dialog=False)
         if self.preflight_report is not None and self.preflight_report.critical_failures:
             self.log_action("Start blocked by startup self-check")
@@ -232,23 +287,46 @@ class RadioControlApp:
             return
 
         self.log_action("Start monitor requested")
-        already_running = is_monitor_running()
-        error = start_monitor()
+        self._set_action_in_progress(True, "Starting")
+
+        def worker():
+            already_running = is_monitor_running()
+            error = start_monitor()
+            self.root.after(0, lambda: self._on_start_monitor_complete(already_running, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_start_monitor_complete(self, already_running: bool, error: str | None):
+        self._set_action_in_progress(False)
         if error:
             self.log_action(f"Start failed: {error}")
             messagebox.showerror("Monitor", error)
             return
+
         if already_running:
             self.log_action("Monitor already running")
         else:
             self.log_action("Monitor started in background")
         self.system_started = True
-        time.sleep(1)
         self.refresh_statuses()
 
     def stop_background_gui(self):
+        if self.action_in_progress:
+            self.log_action("Stop ignored: action already in progress")
+            return
+
         self.log_action("Stop processes requested")
-        stop_background()
+        self._set_action_in_progress(True, "Stopping")
+
+        def worker():
+            stop_background()
+            self.root.after(0, self._on_stop_background_complete)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_stop_background_complete(self):
+        self._set_action_in_progress(False)
+        self.system_started = False
         self.log_action("Background processes stopped")
         self.refresh_statuses()
 
@@ -323,6 +401,13 @@ class RadioControlApp:
     def refresh_day_files(self):
         station_name = self.selected_station_name()
 
+        previous_selection = self.day_files_list.curselection()
+        previous_index = int(previous_selection[0]) if previous_selection else None
+        try:
+            previous_top_fraction = self.day_files_list.yview()[0]
+        except Exception:
+            previous_top_fraction = 0.0
+
         self.day_files_list.delete(0, tk.END)
         self.day_files_paths = []
         if not station_name:
@@ -340,6 +425,15 @@ class RadioControlApp:
         self.day_files_paths = files[:200]
         for entry in entries[:200]:
             self.day_files_list.insert(tk.END, entry)
+
+        item_count = len(self.day_files_paths)
+        if previous_index is not None and 0 <= previous_index < item_count:
+            self.day_files_list.selection_set(previous_index)
+
+        if item_count > 0:
+            max_fraction = 1.0
+            clamped_fraction = max(0.0, min(max_fraction, previous_top_fraction))
+            self.day_files_list.yview_moveto(clamped_fraction)
 
     def play_selected_day_file(self):
         station_name = self.selected_station_name()
@@ -431,6 +525,11 @@ class RadioControlApp:
 
         running = is_monitor_running()
         self.monitor_state_var.set("Monitor: RUNNING (background)" if running else "Monitor: STOPPED")
+        if not self.action_in_progress:
+            self.action_progress_var.set("Recording" if running else "Idle")
+
+        previously_selected_station = self.selected_station_name()
+        station_row_map: dict[str, str] = {}
 
         for row in self.tree.get_children():
             self.tree.delete(row)
@@ -440,16 +539,21 @@ class RadioControlApp:
         self.station_stats_var.set(f"Stations: {len(stations)}")
         self.recordings_stats_var.set(f"Recordings: {format_size(total_recording_size)}")
 
-        if running:
-            self.system_started = True
-
         if not self.system_started:
             for station_name, _stream in stations:
-                self.tree.insert(
+                row_id = self.tree.insert(
                     "",
                     "end",
                     values=(station_name, "IDLE", "-", "Press Start Monitor to begin", "-"),
                 )
+                station_row_map[station_name] = row_id
+
+            if previously_selected_station and previously_selected_station in station_row_map:
+                row_id = station_row_map[previously_selected_station]
+                self.tree.selection_set(row_id)
+                self.tree.focus(row_id)
+                self.tree.see(row_id)
+
             self.day_files_list.delete(0, tk.END)
             self.day_title_var.set("Day files: system not started")
             self.last_refresh_var.set(f"Last refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -458,7 +562,14 @@ class RadioControlApp:
 
         for station_name, _stream in stations:
             status, detail, latest, issue = build_station_status(station_name)
-            self.tree.insert("", "end", values=(station_name, status, issue, detail, latest))
+            row_id = self.tree.insert("", "end", values=(station_name, status, issue, detail, latest))
+            station_row_map[station_name] = row_id
+
+        if previously_selected_station and previously_selected_station in station_row_map:
+            row_id = station_row_map[previously_selected_station]
+            self.tree.selection_set(row_id)
+            self.tree.focus(row_id)
+            self.tree.see(row_id)
 
         self.refresh_day_files()
 
@@ -473,6 +584,13 @@ class RadioControlApp:
             except tk.TclError:
                 pass
             self.refresh_job = None
+
+        if self._action_spinner_job is not None:
+            try:
+                self.root.after_cancel(self._action_spinner_job)
+            except tk.TclError:
+                pass
+            self._action_spinner_job = None
 
         if self.keep_awake_enabled:
             self.power_manager.disable_keep_awake()
