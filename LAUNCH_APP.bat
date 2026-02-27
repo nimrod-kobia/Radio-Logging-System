@@ -1,6 +1,12 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+
+if exist "%~dp0RadioControlApp.exe" (
+    start "" "%~dp0RadioControlApp.exe"
+    exit /b 0
+)
+
 if exist "%~dp0app\radio_control_app.py" (
     where pythonw >nul 2>nul
     if %errorlevel%==0 (

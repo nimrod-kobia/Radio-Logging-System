@@ -106,11 +106,20 @@ def day_file_display_entries(station_name: str, day_offset: int = 0) -> tuple[st
         if start_dt is not None and end_dt is not None:
             duration_str = _format_duration((end_dt - start_dt).total_seconds())
         elif start_dt is not None:
-            # Last/active file: use mtime as end estimate
+            # Last file in this day folder: use mtime as end estimate.
+            # Mark as ongoing only if writes are still fresh.
             try:
-                mtime = fp.stat().st_mtime
-                elapsed = time.time() - start_dt.timestamp()
-                duration_str = _format_duration(elapsed) + " (ongoing)"
+                stat = fp.stat()
+                mtime_ts = stat.st_mtime
+                end_ts = max(start_dt.timestamp(), mtime_ts)
+                elapsed = end_ts - start_dt.timestamp()
+
+                age_seconds = time.time() - mtime_ts
+                is_ongoing = age_seconds <= WRITE_STALE_SECONDS
+
+                duration_str = _format_duration(elapsed)
+                if is_ongoing:
+                    duration_str += " (ongoing)"
             except OSError:
                 duration_str = "?"
         else:

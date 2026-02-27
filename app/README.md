@@ -15,10 +15,16 @@ Desktop GUI for your radio recording system.
 - Shows per-station issue analysis from latest log lines.
 - Opens selected station log file directly from GUI.
 - On initial app open (before first start), stations show `IDLE` and error signals are suppressed.
+- Runs a startup self-check (ffmpeg/backend/path permissions) and blocks monitor start if critical checks fail.
+- Writes runtime observability snapshots to `Runtime/metrics.json` and `Runtime/service_heartbeat.json`.
+- Rotates oversized logs and prunes old rotated logs automatically.
+- Supports watchdog-driven auto-recovery using `app/rc_watchdog.py`.
 
 ## Runtime layout
 
 - `Runtime/` contains both station logs and generated worker bat files.
+- `Runtime/metrics.json` contains service/station counters (starts/stops/restarts, sync health, last write age).
+- `Runtime/service_heartbeat.json` is updated every sync loop for liveness checks.
 - Legacy `Logs/` and `Workers/` folders are no longer used.
 
 ## App file grouping
@@ -42,12 +48,29 @@ Or manually:
 
 - `python app/radio_control_app.py`
 
+## Service resilience (watchdog)
+
+- Install watchdog task on Windows: `scripts/INSTALL_WATCHDOG_TASK.bat`
+- Remove watchdog task: `scripts/UNINSTALL_WATCHDOG_TASK.bat`
+- Watchdog runs every minute and starts monitor if it is down.
+
+## Packaging updates
+
+- Use `scripts/BUILD_NO_PYTHON_WINDOWS.bat`
+- Build now includes:
+	- `RadioControlApp.exe`
+	- `rc_backend_service.exe`
+	- `rc_watchdog.exe`
+	- watchdog task install/uninstall scripts
+- Build also produces `dist/portable.zip` for transfer/deployment.
+
 ## Notes
 
 - Batch scripts are consolidated under `scripts/`.
 - Recordings continue under `RadioRecordings/<Station>/YYYY/MM/DD`.
 - GUI is only for control and visibility.
 - `LAUNCH_APP.bat` and `LAUNCH_APP.sh` are intentionally kept at root for quick access.
+- Use **Run Self Check** in the GUI to re-validate environment readiness anytime.
 
 ## Batch relevancy with GUI
 

@@ -13,6 +13,12 @@ from rc_config import (
 )
 
 
+def _backend_exe_path() -> Path:
+    if is_windows():
+        return ROOT / "rc_backend_service.exe"
+    return ROOT / "rc_backend_service"
+
+
 def process_exists(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -62,10 +68,13 @@ def _run_quiet_nowait(command: list[str]):
 
 def backend_service_pids() -> list[int]:
     if is_windows():
+        backend_exe_name = _backend_exe_path().name
         command = (
-            "$procs=Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" -ErrorAction SilentlyContinue; "
-            "$hits=$procs | Where-Object { $_.Name -match '^python(w)?\\.exe$' -and $_.CommandLine -and $_.CommandLine -match 'rc_backend_service\\.py' }; "
-            "$hits | ForEach-Object { $_.ProcessId }"
+            "$python=Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" -ErrorAction SilentlyContinue; "
+            "$pythonHits=$python | Where-Object { $_.Name -match '^python(w)?\\.exe$' -and $_.CommandLine -and $_.CommandLine -match 'rc_backend_service\\.py' }; "
+            f"$exeHits=Get-CimInstance Win32_Process -Filter \"Name='{backend_exe_name}'\" -ErrorAction SilentlyContinue; "
+            "$all=@($pythonHits + $exeHits) | Where-Object { $_ -ne $null }; "
+            "$all | ForEach-Object { $_.ProcessId }"
         )
         try:
             result = subprocess.run(
@@ -94,6 +103,10 @@ def backend_service_pids() -> list[int]:
 
 
 def monitor_command() -> list[str] | None:
+    backend_exe = _backend_exe_path()
+    if backend_exe.exists():
+        return [str(backend_exe)]
+
     if BACKEND_SERVICE.exists():
         return [sys.executable, str(BACKEND_SERVICE)]
     return None

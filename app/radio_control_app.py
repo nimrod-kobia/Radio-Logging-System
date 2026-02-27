@@ -1,15 +1,17 @@
 import os
 import time
+import webbrowser
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from rc_config import ROOT, REFRESH_INTERVAL_MS
+from rc_config import ROOT, REFRESH_INTERVAL_MS, RECORDINGS
 from rc_logs import station_log_path
 from rc_power import PowerManager
+from rc_preflight import PreflightReport, run_preflight_checks
 from rc_process import is_monitor_running, open_path, start_monitor, stop_background
 from rc_station_store import read_stations, validate_station, write_stations_atomic
-from rc_status import build_station_status, day_file_display_entries
+from rc_status import build_station_status, day_file_display_entries, format_size
 
 
 class RadioControlApp:
@@ -20,8 +22,11 @@ class RadioControlApp:
         self.refresh_job = None
 
         self.monitor_state_var = tk.StringVar(value="Monitor: checking...")
+        self.readiness_var = tk.StringVar(value="System Ready: checking...")
         self.last_refresh_var = tk.StringVar(value="Last refresh: -")
         self.action_state_var = tk.StringVar(value="Action: ready")
+        self.station_stats_var = tk.StringVar(value="Stations: 0")
+        self.recordings_stats_var = tk.StringVar(value="Recordings: 0 bytes")
         self.station_name_var = tk.StringVar(value="")
         self.station_url_var = tk.StringVar(value="")
         self.day_offset = 0
@@ -29,8 +34,10 @@ class RadioControlApp:
         self.power_manager = PowerManager()
         self.keep_awake_enabled = self.power_manager.enable_keep_awake()
         self.system_started = is_monitor_running()
+        self.preflight_report: PreflightReport | None = None
 
         self._build_ui()
+        self.run_startup_checks(show_dialog=False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh_statuses()
 
@@ -39,8 +46,11 @@ class RadioControlApp:
         top.pack(fill="x")
 
         ttk.Label(top, textvariable=self.monitor_state_var, font=("Segoe UI", 10, "bold")).pack(side="left")
+        ttk.Label(top, textvariable=self.readiness_var).pack(side="left", padx=(20, 0))
         ttk.Label(top, textvariable=self.last_refresh_var).pack(side="left", padx=(20, 0))
         ttk.Label(top, textvariable=self.action_state_var).pack(side="left", padx=(20, 0))
+        ttk.Label(top, textvariable=self.recordings_stats_var).pack(side="right")
+        ttk.Label(top, textvariable=self.station_stats_var).pack(side="right", padx=(0, 16))
 
         button_bar = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         button_bar.pack(fill="x")
@@ -49,6 +59,7 @@ class RadioControlApp:
         ttk.Button(button_bar, text="Stop Background Processes", command=self.stop_background_gui).pack(side="left", padx=8)
         ttk.Button(button_bar, text="Refresh Now", command=self.manual_refresh).pack(side="left")
         ttk.Button(button_bar, text="Open Selected Log", command=self.open_selected_log).pack(side="left", padx=(8, 0))
+        ttk.Button(button_bar, text="Run Self Check", command=lambda: self.run_startup_checks(show_dialog=True)).pack(side="left", padx=(8, 0))
 
         station_bar = ttk.LabelFrame(self.root, text="Station Management", padding=10)
         station_bar.pack(fill="x", padx=10, pady=(0, 8))
@@ -59,8 +70,9 @@ class RadioControlApp:
         ttk.Label(station_bar, text="Stream URL").grid(row=0, column=1, sticky="w")
         ttk.Entry(station_bar, textvariable=self.station_url_var, width=80).grid(row=1, column=1, padx=(0, 10), sticky="we")
 
-        ttk.Button(station_bar, text="Add Station", command=self.add_station).grid(row=1, column=2, padx=(0, 8))
-        ttk.Button(station_bar, text="Remove Selected", command=self.remove_selected_station).grid(row=1, column=3)
+        ttk.Button(station_bar, text="Go", command=self.open_selected_stream).grid(row=1, column=2, padx=(0, 8))
+        ttk.Button(station_bar, text="Add Station", command=self.add_station).grid(row=1, column=3, padx=(0, 8))
+        ttk.Button(station_bar, text="Remove Selected", command=self.remove_selected_station).grid(row=1, column=4)
 
         station_bar.grid_columnconfigure(1, weight=1)
 
@@ -69,7 +81,6 @@ class RadioControlApp:
 
         ttk.Button(day_bar, text="Yesterday", command=lambda: self.set_day_offset(-1)).pack(side="left")
         ttk.Button(day_bar, text="Today", command=lambda: self.set_day_offset(0)).pack(side="left", padx=6)
-        ttk.Button(day_bar, text="Tomorrow", command=lambda: self.set_day_offset(1)).pack(side="left")
         ttk.Label(day_bar, textvariable=self.day_title_var).pack(side="left", padx=(16, 0))
 
         day_list_frame = ttk.Frame(day_bar)
@@ -128,8 +139,15 @@ class RadioControlApp:
         activity_wrap = ttk.LabelFrame(self.root, text="Activity", padding=10)
         activity_wrap.pack(fill="both", expand=False, padx=10, pady=(0, 10))
 
-        self.activity_list = tk.Listbox(activity_wrap, height=6)
-        self.activity_list.pack(fill="both", expand=True)
+        activity_frame = ttk.Frame(activity_wrap)
+        activity_frame.pack(fill="both", expand=True)
+
+        activity_scroll = ttk.Scrollbar(activity_frame, orient="vertical")
+        self.activity_list = tk.Listbox(activity_frame, height=6, yscrollcommand=activity_scroll.set)
+        activity_scroll.config(command=self.activity_list.yview)
+
+        self.activity_list.pack(side="left", fill="both", expand=True)
+        activity_scroll.pack(side="right", fill="y")
 
     def selected_station_name(self) -> str:
         selected = self.tree.selection()
@@ -154,7 +172,63 @@ class RadioControlApp:
         self.log_action("Refresh requested")
         self.refresh_statuses()
 
+    def total_recordings_size_bytes(self) -> int:
+        total_bytes = 0
+        if not RECORDINGS.exists():
+            return total_bytes
+
+        for root_dir, _dir_names, file_names in os.walk(RECORDINGS):
+            for file_name in file_names:
+                file_path = os.path.join(root_dir, file_name)
+                try:
+                    total_bytes += os.path.getsize(file_path)
+                except OSError:
+                    continue
+
+        return total_bytes
+
+    def _preflight_summary_lines(self) -> list[str]:
+        if self.preflight_report is None:
+            return ["No startup check data yet."]
+
+        lines: list[str] = []
+        for check in self.preflight_report.checks:
+            status = "OK" if check.ok else "FAIL"
+            scope = "CRITICAL" if check.critical else "OPTIONAL"
+            lines.append(f"[{status}] {check.name} ({scope}) - {check.detail}")
+        return lines
+
+    def run_startup_checks(self, show_dialog: bool):
+        self.preflight_report = run_preflight_checks()
+
+        critical_failures = self.preflight_report.critical_failures
+        if critical_failures:
+            self.readiness_var.set(f"System Ready: BLOCKED ({len(critical_failures)} critical checks failed)")
+            self.log_action("Startup self-check: blocked")
+        else:
+            optional_failures = self.preflight_report.noncritical_failures
+            if optional_failures:
+                self.readiness_var.set(f"System Ready: YES ({len(optional_failures)} warnings)")
+                self.log_action("Startup self-check: ready with warnings")
+            else:
+                self.readiness_var.set("System Ready: YES")
+                self.log_action("Startup self-check: passed")
+
+        if show_dialog:
+            details = "\n".join(self._preflight_summary_lines())
+            if critical_failures:
+                messagebox.showerror("Startup self-check", details)
+            else:
+                messagebox.showinfo("Startup self-check", details)
+
     def start_monitor_gui(self):
+        self.run_startup_checks(show_dialog=False)
+        if self.preflight_report is not None and self.preflight_report.critical_failures:
+            self.log_action("Start blocked by startup self-check")
+            details = "\n".join(self._preflight_summary_lines())
+            messagebox.showerror("Monitor", f"Cannot start monitor until critical checks pass.\n\n{details}")
+            return
+
         self.log_action("Start monitor requested")
         already_running = is_monitor_running()
         error = start_monitor()
@@ -239,10 +313,9 @@ class RadioControlApp:
         self.day_offset = offset
         if offset == -1:
             self.log_action("Day view set: Yesterday")
-        elif offset == 0:
-            self.log_action("Day view set: Today")
         else:
-            self.log_action("Day view set: Tomorrow")
+            self.day_offset = 0
+            self.log_action("Day view set: Today")
         self.refresh_day_files()
 
     def refresh_day_files(self):
@@ -283,6 +356,34 @@ class RadioControlApp:
             self.log_action(f"Open log failed for {station_name}: {exc}")
             messagebox.showerror("Open log", f"Could not open log file.\n{exc}")
 
+    def open_selected_stream(self):
+        station_name = self.selected_station_name()
+        stream_url = self.station_url_var.get().strip()
+
+        if not stream_url and station_name:
+            for name, stream in read_stations():
+                if name == station_name:
+                    stream_url = stream.strip()
+                    self.station_url_var.set(stream_url)
+                    break
+
+        if not stream_url:
+            self.log_action("Open stream failed: no URL available")
+            messagebox.showerror("Open stream", "Select a station with a valid stream URL first.")
+            return
+
+        if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
+            self.log_action("Open stream failed: invalid URL")
+            messagebox.showerror("Open stream", "Stream URL must start with http:// or https://")
+            return
+
+        try:
+            webbrowser.open(stream_url, new=2)
+            self.log_action(f"Opened stream URL for {station_name or 'selected station'}")
+        except Exception as exc:
+            self.log_action(f"Open stream failed: {exc}")
+            messagebox.showerror("Open stream", f"Could not open browser.\n{exc}")
+
     def refresh_statuses(self):
         if self.refresh_job is not None:
             try:
@@ -298,6 +399,9 @@ class RadioControlApp:
             self.tree.delete(row)
 
         stations = read_stations()
+        total_recording_size = self.total_recordings_size_bytes()
+        self.station_stats_var.set(f"Stations: {len(stations)}")
+        self.recordings_stats_var.set(f"Recordings: {format_size(total_recording_size)}")
 
         if running:
             self.system_started = True

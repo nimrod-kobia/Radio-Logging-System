@@ -3,8 +3,10 @@ import signal
 import subprocess
 import sys
 import time
+import json
 from datetime import date, timedelta, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from rc_config import (
     LOGS,
@@ -18,8 +20,12 @@ from rc_config import (
 from rc_station_store import read_stations
 
 SERVICE_LOG = LOGS / "service.log"
+METRICS_FILE = LOGS / "metrics.json"
+HEARTBEAT_FILE = LOGS / "service_heartbeat.json"
 SYNC_SECONDS = 5
 STALE_RESTART_SECONDS = max(300, WRITE_STALE_SECONDS * 3)
+LOG_ROTATE_BYTES = 10 * 1024 * 1024
+LOG_RETENTION_DAYS = 14
 
 if is_windows():
     FFMPEG_BIN = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
@@ -27,6 +33,75 @@ else:
     FFMPEG_BIN = Path("ffmpeg")
 
 RUNNING = True
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_json_atomic(path: Path, payload: dict):
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _rotate_log(path: Path, max_bytes: int = LOG_ROTATE_BYTES, keep: int = 3):
+    try:
+        if not path.exists() or path.stat().st_size < max_bytes:
+            return
+    except OSError:
+        return
+
+    try:
+        oldest = path.with_name(f"{path.name}.{keep}")
+        oldest.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    for index in range(keep - 1, 0, -1):
+        src = path.with_name(f"{path.name}.{index}")
+        dst = path.with_name(f"{path.name}.{index + 1}")
+        try:
+            if src.exists():
+                src.replace(dst)
+        except OSError:
+            pass
+
+    try:
+        if path.exists():
+            path.replace(path.with_name(f"{path.name}.1"))
+    except OSError:
+        pass
+
+
+def _prune_old_logs(root: Path, retention_days: int = LOG_RETENTION_DAYS):
+    cutoff = time.time() - retention_days * 86400
+    for log_file in root.glob("*.log.*"):
+        try:
+            if log_file.stat().st_mtime < cutoff:
+                log_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _is_valid_stream_url(stream: str) -> bool:
+    if not stream or len(stream) > 1000:
+        return False
+    if any(ch in stream for ch in "\r\n\x00"):
+        return False
+    parsed = urlparse(stream)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    if not parsed.netloc:
+        return False
+    return True
 
 
 def process_exists(pid: int) -> bool:
@@ -48,6 +123,11 @@ class WorkerManager:
         self.workers: dict[str, tuple[subprocess.Popen, object]] = {}
         self.restart_state: dict[str, tuple[int, float]] = {}
         self.worker_started_at: dict[str, float] = {}
+        self.station_metrics: dict[str, dict[str, object]] = {}
+        self.service_started_at = _utc_now_iso()
+        self.sync_count = 0
+        self.sync_error_count = 0
+        self.maintenance_ticks = 0
 
     @staticmethod
     def restart_backoff_seconds(fail_count: int) -> int:
@@ -179,12 +259,69 @@ class WorkerManager:
     @staticmethod
     def log_service(message: str):
         LOGS.mkdir(parents=True, exist_ok=True)
+        _rotate_log(SERVICE_LOG)
         line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n"
         try:
             with SERVICE_LOG.open("a", encoding="utf-8") as handle:
                 handle.write(line)
         except OSError:
             pass
+
+    def station_metric(self, station_name: str) -> dict[str, object]:
+        if station_name not in self.station_metrics:
+            self.station_metrics[station_name] = {
+                "starts": 0,
+                "stops": 0,
+                "restarts": 0,
+                "last_start_utc": None,
+                "last_stop_utc": None,
+                "last_restart_reason": None,
+                "last_exit_code": None,
+                "last_write_age_seconds": None,
+            }
+        return self.station_metrics[station_name]
+
+    def note_restart(self, station_name: str, reason: str, exit_code: int | None = None):
+        metric = self.station_metric(station_name)
+        metric["restarts"] = int(metric.get("restarts", 0)) + 1
+        metric["last_restart_reason"] = reason
+        if exit_code is not None:
+            metric["last_exit_code"] = int(exit_code)
+
+    def write_observability(self, sync_error: str | None):
+        now_utc = _utc_now_iso()
+        self.sync_count += 1
+        if sync_error:
+            self.sync_error_count += 1
+
+        active_workers = sorted(self.workers.keys())
+        metrics_payload = {
+            "service_started_at": self.service_started_at,
+            "last_sync_at": now_utc,
+            "sync_count": self.sync_count,
+            "sync_error_count": self.sync_error_count,
+            "active_worker_count": len(active_workers),
+            "active_workers": active_workers,
+            "stations": self.station_metrics,
+        }
+
+        heartbeat_payload = {
+            "alive": True,
+            "updated_at": now_utc,
+            "sync_error": sync_error,
+            "active_worker_count": len(active_workers),
+        }
+
+        try:
+            _write_json_atomic(METRICS_FILE, metrics_payload)
+            _write_json_atomic(HEARTBEAT_FILE, heartbeat_payload)
+        except OSError:
+            pass
+
+        self.maintenance_ticks += 1
+        if self.maintenance_ticks >= 60:
+            self.maintenance_ticks = 0
+            _prune_old_logs(LOGS)
 
     @staticmethod
     def latest_write_age_seconds(station_dir: Path, now_ts: float) -> float | None:
@@ -213,9 +350,14 @@ class WorkerManager:
         if station_name in self.workers:
             self.stop_worker(station_name)
 
+        if not _is_valid_stream_url(stream):
+            self.log_service(f"START_FAIL worker {station_name}: invalid stream URL")
+            raise ValueError("Invalid stream URL")
+
         station_dir, log_path, pid_path = self.station_paths(station_name)
         station_dir.mkdir(parents=True, exist_ok=True)
         self.make_today_dir(station_dir)
+        _rotate_log(log_path)
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if is_windows() else 0
         extra_kwargs = {"start_new_session": True} if not is_windows() else {}
@@ -241,6 +383,9 @@ class WorkerManager:
         self.workers[station_name] = (proc, log_handle)
         self.worker_started_at[station_name] = time.time()
         pid_path.write_text(str(proc.pid), encoding="utf-8")
+        metric = self.station_metric(station_name)
+        metric["starts"] = int(metric.get("starts", 0)) + 1
+        metric["last_start_utc"] = _utc_now_iso()
         self.log_service(f"START worker {station_name} pid={proc.pid}")
 
     def stop_worker(self, station_name: str):
@@ -284,6 +429,10 @@ class WorkerManager:
             pid_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+        metric = self.station_metric(station_name)
+        metric["stops"] = int(metric.get("stops", 0)) + 1
+        metric["last_stop_utc"] = _utc_now_iso()
 
         self.log_service(f"STOP worker {station_name}")
 
@@ -330,6 +479,7 @@ class WorkerManager:
                     backoff = self.restart_backoff_seconds(fail_count)
                     next_retry = now_ts + backoff
                     self.restart_state[station_name] = (fail_count, next_retry)
+                    self.note_restart(station_name, "start_failed")
                     self.log_service(
                         f"RESTART_DELAY worker {station_name} (start_failed, fail_count={fail_count}, retry_in={backoff}s)"
                     )
@@ -344,11 +494,14 @@ class WorkerManager:
                 backoff = self.restart_backoff_seconds(fail_count)
                 next_retry = now_ts + backoff
                 self.restart_state[station_name] = (fail_count, next_retry)
+                self.note_restart(station_name, "exit", exit_code)
                 self.log_service(
                     f"RESTART_DELAY worker {station_name} (exit={exit_code}, fail_count={fail_count}, retry_in={backoff}s)"
                 )
             else:
                 age_seconds = self.latest_write_age_seconds(station_dir, now_ts)
+                metric = self.station_metric(station_name)
+                metric["last_write_age_seconds"] = int(age_seconds) if age_seconds is not None else None
                 started_at = self.worker_started_at.get(station_name, now_ts)
                 worker_age = max(0.0, now_ts - started_at)
                 warmup_grace = max(120, WARMUP_SECONDS * 2)
@@ -364,6 +517,7 @@ class WorkerManager:
                     backoff = self.restart_backoff_seconds(fail_count)
                     next_retry = now_ts + backoff
                     self.restart_state[station_name] = (fail_count, next_retry)
+                    self.note_restart(station_name, "stalled_no_write")
                     self.log_service(
                         f"STALL_RESTART worker {station_name} (no_write_for={int(age_seconds)}s, fail_count={fail_count}, retry_in={backoff}s)"
                     )
@@ -376,6 +530,7 @@ class WorkerManager:
                     backoff = self.restart_backoff_seconds(fail_count)
                     next_retry = now_ts + backoff
                     self.restart_state[station_name] = (fail_count, next_retry)
+                    self.note_restart(station_name, "stalled_no_output")
                     self.log_service(
                         f"STALL_RESTART worker {station_name} (no_output_after_start, fail_count={fail_count}, retry_in={backoff}s)"
                     )
@@ -429,10 +584,13 @@ def main() -> int:
 
     try:
         while RUNNING:
+            sync_error: str | None = None
             try:
                 manager.sync()
             except Exception as exc:
+                sync_error = f"{exc.__class__.__name__}: {exc}"
                 manager.log_service(f"SYNC_ERROR {exc.__class__.__name__}: {exc}")
+            manager.write_observability(sync_error)
             time.sleep(SYNC_SECONDS)
     finally:
         manager.stop_all()
