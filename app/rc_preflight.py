@@ -4,7 +4,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from rc_config import BACKEND_SERVICE, LOGS, RECORDINGS, STATIONS_FILE
+from rc_config import BACKEND_SERVICE, LOGS, RECORDINGS, ROOT, STATIONS_FILE
 
 
 @dataclass
@@ -91,12 +91,20 @@ def run_preflight_checks() -> PreflightReport:
     except Exception as exc:
         checks.append(PreflightCheck(name="Tkinter", ok=False, detail=str(exc), critical=True))
 
-    backend_ok = BACKEND_SERVICE.exists()
+    backend_exe = ROOT / "rc_backend_service.exe"
+    backend_ok = backend_exe.exists() or BACKEND_SERVICE.exists()
+    if backend_exe.exists():
+        backend_detail = str(backend_exe)
+    elif BACKEND_SERVICE.exists():
+        backend_detail = str(BACKEND_SERVICE)
+    else:
+        backend_detail = f"Missing: {backend_exe} and {BACKEND_SERVICE}"
+
     checks.append(
         PreflightCheck(
             name="Backend service",
             ok=backend_ok,
-            detail=str(BACKEND_SERVICE) if backend_ok else f"Missing: {BACKEND_SERVICE}",
+            detail=backend_detail,
             critical=True,
         )
     )

@@ -7,6 +7,10 @@ from rc_config import RECORDINGS, WARMUP_SECONDS, WRITE_STALE_SECONDS, safe_stat
 from rc_logs import latest_issue
 
 
+LATEST_FILE_CACHE_SECONDS = 10
+_LATEST_FILE_CACHE: dict[str, tuple[float, Path | None]] = {}
+
+
 def format_size(num_bytes: int) -> str:
     units = ["bytes", "KB", "MB", "GB", "TB"]
     size = float(num_bytes)
@@ -22,8 +26,17 @@ def format_size(num_bytes: int) -> str:
 
 
 def latest_file(station_name: str) -> Path | None:
+    now_ts = time.time()
+    cached = _LATEST_FILE_CACHE.get(station_name)
+    if cached is not None:
+        cached_at, cached_path = cached
+        if (now_ts - cached_at) < LATEST_FILE_CACHE_SECONDS:
+            if cached_path is None or cached_path.exists():
+                return cached_path
+
     station_dir = RECORDINGS / safe_station_name(station_name)
     if not station_dir.exists():
+        _LATEST_FILE_CACHE[station_name] = (now_ts, None)
         return None
 
     newest = None
@@ -36,6 +49,8 @@ def latest_file(station_name: str) -> Path | None:
         if mtime > newest_mtime:
             newest_mtime = mtime
             newest = file
+
+    _LATEST_FILE_CACHE[station_name] = (now_ts, newest)
     return newest
 
 
