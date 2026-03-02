@@ -1,11 +1,10 @@
 import os
-import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from rc_config import BACKEND_SERVICE, LOGS, RECORDINGS, STATIONS_FILE, is_windows
+from rc_config import BACKEND_SERVICE, LOGS, RECORDINGS, STATIONS_FILE
 
 
 @dataclass
@@ -65,16 +64,10 @@ def _check_stations_file_access() -> tuple[bool, str]:
 
 
 def _check_ffmpeg() -> tuple[bool, str]:
-    if is_windows():
-        ffmpeg_path = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
-        if ffmpeg_path.exists():
-            return True, str(ffmpeg_path)
-        return False, f"Missing at {ffmpeg_path}"
-
-    resolved = shutil.which("ffmpeg")
-    if resolved:
-        return True, resolved
-    return False, "ffmpeg not found in PATH"
+    ffmpeg_path = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
+    if ffmpeg_path.exists():
+        return True, str(ffmpeg_path)
+    return False, f"Missing at {ffmpeg_path}"
 
 
 def run_preflight_checks() -> PreflightReport:

@@ -19,8 +19,15 @@ if %RC% GEQ 8 (
     exit /b %RC%
 )
 
+powershell -NoProfile -ExecutionPolicy Bypass -File "updates\GENERATE_UPDATE_MANIFEST.ps1" -SourceDir "dist\update-package\payload" -OutputFile "dist\update-package\payload\update_manifest.json" -VersionFile "VERSION.txt"
+if errorlevel 1 (
+    echo Failed to generate update manifest.
+    exit /b 1
+)
+
 copy /Y "updates\APPLY_UPDATE_SAFE_WINDOWS.bat" "dist\update-package\APPLY_UPDATE_SAFE_WINDOWS.bat" >nul
 copy /Y "updates\FLASH_DRIVE_UPDATE.bat" "dist\update-package\FLASH_DRIVE_UPDATE.bat" >nul
+copy /Y "updates\VERIFY_UPDATE_MANIFEST.ps1" "dist\update-package\VERIFY_UPDATE_MANIFEST.ps1" >nul
 if exist "VERSION.txt" copy /Y "VERSION.txt" "dist\update-package\VERSION.txt" >nul
 
 if exist "dist\update-package.zip" del /f /q "dist\update-package.zip"

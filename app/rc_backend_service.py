@@ -14,7 +14,6 @@ from rc_config import (
     RECORDINGS,
     WARMUP_SECONDS,
     WRITE_STALE_SECONDS,
-    is_windows,
     safe_station_name,
 )
 from rc_station_store import read_stations
@@ -27,10 +26,7 @@ STALE_RESTART_SECONDS = max(300, WRITE_STALE_SECONDS * 3)
 LOG_ROTATE_BYTES = 10 * 1024 * 1024
 LOG_RETENTION_DAYS = 14
 
-if is_windows():
-    FFMPEG_BIN = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
-else:
-    FFMPEG_BIN = Path("ffmpeg")
+FFMPEG_BIN = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
 
 RUNNING = True
 
@@ -360,8 +356,7 @@ class WorkerManager:
         self.make_today_dir(station_dir)
         _rotate_log(log_path)
 
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if is_windows() else 0
-        extra_kwargs = {"start_new_session": True} if not is_windows() else {}
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         log_handle = log_path.open("a", encoding="utf-8")
         try:
@@ -371,7 +366,6 @@ class WorkerManager:
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 creationflags=creationflags,
-                **extra_kwargs,
             )
         except Exception as exc:
             try:
@@ -402,16 +396,13 @@ class WorkerManager:
 
         if proc is not None and proc.poll() is None:
             try:
-                if is_windows():
-                    subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    )
-                else:
-                    proc.terminate()
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
             except OSError:
                 pass
 
@@ -575,9 +566,7 @@ def _signal_handler(_signum, _frame):
 
 
 def _ffmpeg_available() -> bool:
-    if is_windows():
-        return FFMPEG_BIN.exists()
-    return True
+    return FFMPEG_BIN.exists()
 
 
 def main() -> int:

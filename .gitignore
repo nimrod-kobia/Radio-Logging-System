@@ -9,6 +9,10 @@ dist/
 
 __pycache__/
 app/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*$py.class
 
 .env
 .env.*

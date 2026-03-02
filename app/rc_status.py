@@ -39,16 +39,16 @@ def latest_file(station_name: str) -> Path | None:
     return newest
 
 
-def day_folder(station_name: str, day_offset: int = 0) -> tuple[str, Path]:
-    target_day = date.today() + timedelta(days=day_offset)
+def day_folder(station_name: str, day_offset: int = 0, target_day: date | None = None) -> tuple[str, Path]:
+    selected_day = target_day if target_day is not None else (date.today() + timedelta(days=day_offset))
     folder = (
         RECORDINGS
         / safe_station_name(station_name)
-        / f"{target_day.year:04d}"
-        / f"{target_day.month:02d}"
-        / f"{target_day.day:02d}"
+        / f"{selected_day.year:04d}"
+        / f"{selected_day.month:02d}"
+        / f"{selected_day.day:02d}"
     )
-    return target_day.strftime("%Y-%m-%d"), folder
+    return selected_day.strftime("%Y-%m-%d"), folder
 
 
 _FNAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})\.mp3$")
@@ -75,8 +75,8 @@ def _format_duration(seconds: float) -> str:
     return f"{hours}h {mins:02d}m {secs:02d}s"
 
 
-def list_day_files(station_name: str, day_offset: int = 0) -> tuple[str, list[Path]]:
-    day_label, folder = day_folder(station_name, day_offset)
+def list_day_files(station_name: str, day_offset: int = 0, target_day: date | None = None) -> tuple[str, list[Path]]:
+    day_label, folder = day_folder(station_name, day_offset, target_day)
     if not folder.exists():
         return day_label, []
 
@@ -85,9 +85,14 @@ def list_day_files(station_name: str, day_offset: int = 0) -> tuple[str, list[Pa
     return day_label, files
 
 
-def day_file_display_entries(station_name: str, day_offset: int = 0) -> tuple[str, list[str]]:
+def day_file_display_entries(
+    station_name: str,
+    day_offset: int = 0,
+    target_day: date | None = None,
+    monitor_running: bool = True,
+) -> tuple[str, list[str]]:
     """Return (day_label, list of human-readable display strings) for the day view listbox."""
-    day_label, files = list_day_files(station_name, day_offset)
+    day_label, files = list_day_files(station_name, day_offset, target_day)
     if not files:
         return day_label, []
 
@@ -115,7 +120,7 @@ def day_file_display_entries(station_name: str, day_offset: int = 0) -> tuple[st
                 elapsed = end_ts - start_dt.timestamp()
 
                 age_seconds = time.time() - mtime_ts
-                is_ongoing = age_seconds <= WRITE_STALE_SECONDS
+                is_ongoing = monitor_running and age_seconds <= WRITE_STALE_SECONDS
 
                 duration_str = _format_duration(elapsed)
                 if is_ongoing:

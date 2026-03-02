@@ -1,5 +1,4 @@
 import ctypes
-import os
 
 
 ES_AWAYMODE_REQUIRED = 0x00000040
@@ -11,14 +10,7 @@ class PowerManager:
     def __init__(self):
         self.enabled = False
 
-    @staticmethod
-    def _is_windows() -> bool:
-        return os.name == "nt"
-
     def enable_keep_awake(self) -> bool:
-        if not self._is_windows():
-            return False
-
         try:
             result = ctypes.windll.kernel32.SetThreadExecutionState(
                 ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED
@@ -30,9 +22,6 @@ class PowerManager:
             return False
 
     def disable_keep_awake(self) -> bool:
-        if not self._is_windows():
-            return False
-
         try:
             result = ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
             self.enabled = False

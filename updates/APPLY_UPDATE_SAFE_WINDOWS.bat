@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 if "%~1"=="" (
@@ -45,6 +45,21 @@ if not exist "%TARGET%" (
     exit /b 1
 )
 
+set "MANIFEST=%SOURCE%\update_manifest.json"
+if exist "%MANIFEST%" (
+    echo Found update manifest. Verifying payload integrity...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0VERIFY_UPDATE_MANIFEST.ps1" -SourceDir "%SOURCE%" -ManifestFile "%MANIFEST%"
+    set "VERIFY_RC=!errorlevel!"
+    if not "!VERIFY_RC!"=="0" (
+        echo.
+        echo Update validation failed. Aborting update.
+        echo Manifest file: "%MANIFEST%"
+        exit /b !VERIFY_RC!
+    )
+) else (
+    echo No update manifest found. Proceeding in legacy mode without checksum validation.
+)
+
 set "RUNNING=0"
 tasklist /FI "IMAGENAME eq RadioControlApp.exe" | find /I "RadioControlApp.exe" >nul && set "RUNNING=1"
 tasklist /FI "IMAGENAME eq rc_backend_service.exe" | find /I "rc_backend_service.exe" >nul && set "RUNNING=1"
@@ -85,13 +100,29 @@ echo Source: "%SOURCE%"
 echo Preserving: RadioRecordings, Runtime, stations.txt
 
 robocopy "%SOURCE%" "%TARGET%" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /XD "RadioRecordings" "Runtime" ".git" "dist" /XF "stations.txt"
-set "RC=%errorlevel%"
-if %RC% GEQ 8 (
-    echo Update failed. robocopy exit code: %RC%
-    exit /b %RC%
+set "RC=!errorlevel!"
+if !RC! GEQ 8 (
+    echo Update failed. robocopy exit code: !RC!
+    exit /b !RC!
 )
 
 echo Update applied successfully.
+if exist "%TARGET%\update_manifest.json" (
+    del /f /q "%TARGET%\update_manifest.json" >nul 2>nul
+    if exist "%TARGET%\update_manifest.json" (
+        echo Warning: Could not remove "%TARGET%\update_manifest.json" automatically.
+    ) else (
+        echo Removed target update_manifest.json.
+    )
+)
+if exist "%TARGET%\dist" (
+    rmdir /s /q "%TARGET%\dist" >nul 2>nul
+    if exist "%TARGET%\dist" (
+        echo Warning: Could not remove "%TARGET%\dist" automatically.
+    ) else (
+        echo Cleaned up target dist folder.
+    )
+)
 set "LAUNCH_BAT=%TARGET%\LAUNCH_APP.bat"
 if exist "%LAUNCH_BAT%" (
     choice /C YN /N /M "Start app now? [Y/N]: "

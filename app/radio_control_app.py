@@ -2,7 +2,8 @@ import os
 import threading
 import time
 import webbrowser
-from datetime import datetime
+import calendar
+from datetime import datetime, date, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -13,6 +14,9 @@ from rc_preflight import PreflightReport, run_preflight_checks
 from rc_process import is_monitor_running, open_path, start_monitor, stop_background
 from rc_station_store import read_stations, validate_station, write_stations_atomic
 from rc_status import build_station_status, day_file_display_entries, format_size, list_day_files
+
+STARTUP_STATUS_GRACE_SECONDS = 120
+RECORDING_SIZE_REFRESH_SECONDS = 30
 
 
 class RadioControlApp:
@@ -27,10 +31,17 @@ class RadioControlApp:
         self.last_refresh_var = tk.StringVar(value="Last refresh: -")
         self.action_state_var = tk.StringVar(value="Action: ready")
         self.station_stats_var = tk.StringVar(value="Stations: 0")
-        self.recordings_stats_var = tk.StringVar(value="Recordings: 0 bytes")
+        self.recordings_stats_var = tk.StringVar(value="Recordings (Total): 0 bytes")
+        self.recording_scope_var = tk.StringVar(value="Total")
+        self.recording_sizes_cache = {
+            "Day": 0,
+            "Week": 0,
+            "Month": 0,
+            "Total": 0,
+        }
         self.station_name_var = tk.StringVar(value="")
         self.station_url_var = tk.StringVar(value="")
-        self.day_offset = 0
+        self.selected_day: date | None = None
         self.day_files_paths = []
         self.day_title_var = tk.StringVar(value="Day files: Today")
         self.power_manager = PowerManager()
@@ -43,6 +54,9 @@ class RadioControlApp:
         self._action_spinner_frames = ("|", "/", "-", "\\")
         self._action_spinner_index = 0
         self._action_progress_base = "Working"
+        self._last_running_state = False
+        self.monitor_started_at_ts: float | None = None
+        self._recording_sizes_last_compute_ts = 0.0
 
         self._build_ui()
         self.run_startup_checks(show_dialog=False)
@@ -58,6 +72,15 @@ class RadioControlApp:
         ttk.Label(top, textvariable=self.last_refresh_var).pack(side="left", padx=(20, 0))
         ttk.Label(top, textvariable=self.action_state_var).pack(side="left", padx=(20, 0))
         ttk.Label(top, textvariable=self.recordings_stats_var).pack(side="right")
+        self.recording_scope_combo = ttk.Combobox(
+            top,
+            state="readonly",
+            width=7,
+            values=("Day", "Week", "Month", "Total"),
+            textvariable=self.recording_scope_var,
+        )
+        self.recording_scope_combo.bind("<<ComboboxSelected>>", self.on_recording_scope_change)
+        self.recording_scope_combo.pack(side="right", padx=(0, 8))
         ttk.Label(top, textvariable=self.station_stats_var).pack(side="right", padx=(0, 16))
 
         button_bar = ttk.Frame(self.root, padding=(10, 0, 10, 10))
@@ -68,7 +91,6 @@ class RadioControlApp:
         self.stop_button = ttk.Button(button_bar, text="Stop Background Processes", command=self.stop_background_gui)
         self.stop_button.pack(side="left", padx=8)
         ttk.Label(button_bar, textvariable=self.action_progress_var).pack(side="left", padx=(10, 0))
-        ttk.Button(button_bar, text="⟳", width=3, command=self.manual_refresh).pack(side="left", padx=(8, 0))
         ttk.Button(button_bar, text="Open Selected Log", command=self.open_selected_log).pack(side="left", padx=(8, 0))
         ttk.Button(button_bar, text="Run Self Check", command=lambda: self.run_startup_checks(show_dialog=True)).pack(side="left", padx=(8, 0))
 
@@ -92,6 +114,7 @@ class RadioControlApp:
 
         ttk.Button(day_bar, text="Yesterday", command=lambda: self.set_day_offset(-1)).pack(side="left")
         ttk.Button(day_bar, text="Today", command=lambda: self.set_day_offset(0)).pack(side="left", padx=6)
+        ttk.Button(day_bar, text="Pick Date", command=self.open_day_picker).pack(side="left", padx=(0, 6))
         ttk.Button(day_bar, text="Play Selected", command=self.play_selected_day_file).pack(side="left", padx=(8, 0))
         ttk.Label(day_bar, textvariable=self.day_title_var).pack(side="left", padx=(16, 0))
 
@@ -180,26 +203,78 @@ class RadioControlApp:
             self.activity_list.delete(0, current - max_rows - 1)
         self.activity_list.yview_moveto(1.0)
 
-    def manual_refresh(self):
-        if is_monitor_running():
-            self.system_started = True
-        self.log_action("Refresh requested")
-        self.refresh_statuses()
-
-    def total_recordings_size_bytes(self) -> int:
+    def recording_size_summary_bytes(self) -> tuple[int, int, int, int]:
+        day_bytes = 0
+        week_bytes = 0
+        month_bytes = 0
         total_bytes = 0
+
         if not RECORDINGS.exists():
-            return total_bytes
+            return day_bytes, week_bytes, month_bytes, total_bytes
+
+        now = datetime.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = day_start - timedelta(days=6)
+        month_start = day_start.replace(day=1)
 
         for root_dir, _dir_names, file_names in os.walk(RECORDINGS):
             for file_name in file_names:
                 file_path = os.path.join(root_dir, file_name)
                 try:
-                    total_bytes += os.path.getsize(file_path)
+                    file_size = os.path.getsize(file_path)
+                    mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
                 except OSError:
                     continue
 
-        return total_bytes
+                total_bytes += file_size
+                if mtime >= month_start:
+                    month_bytes += file_size
+                if mtime >= week_start:
+                    week_bytes += file_size
+                if mtime >= day_start:
+                    day_bytes += file_size
+
+        return day_bytes, week_bytes, month_bytes, total_bytes
+
+    def _update_recording_size_display(self):
+        scope = self.recording_scope_var.get().strip() or "Total"
+        if scope not in self.recording_sizes_cache:
+            scope = "Total"
+            self.recording_scope_var.set(scope)
+
+        value = self.recording_sizes_cache.get(scope, 0)
+        self.recordings_stats_var.set(f"Recordings ({scope}): {format_size(value)}")
+
+    def on_recording_scope_change(self, _event=None):
+        self._update_recording_size_display()
+
+    def _refresh_recording_size_cache(self, force: bool = False):
+        now_ts = time.time()
+        if not force and (now_ts - self._recording_sizes_last_compute_ts) < RECORDING_SIZE_REFRESH_SECONDS:
+            return
+
+        day_size, week_size, month_size, total_size = self.recording_size_summary_bytes()
+        self.recording_sizes_cache = {
+            "Day": day_size,
+            "Week": week_size,
+            "Month": month_size,
+            "Total": total_size,
+        }
+        self._recording_sizes_last_compute_ts = now_ts
+
+    def _apply_startup_status_grace(self, status: str, detail: str, latest: str, issue: str) -> tuple[str, str, str, str]:
+        if self.monitor_started_at_ts is None:
+            return status, detail, latest, issue
+
+        elapsed = time.time() - self.monitor_started_at_ts
+        if elapsed >= STARTUP_STATUS_GRACE_SECONDS:
+            return status, detail, latest, issue
+
+        if status in {"NO WRITE", "NO AUDIO"}:
+            remaining = max(0, int(STARTUP_STATUS_GRACE_SECONDS - elapsed))
+            return "STARTING", f"startup grace ({remaining}s)", latest, "-"
+
+        return status, detail, latest, issue
 
     def _preflight_summary_lines(self) -> list[str]:
         if self.preflight_report is None:
@@ -390,15 +465,93 @@ class RadioControlApp:
         self.refresh_day_files()
 
     def set_day_offset(self, offset: int):
-        self.day_offset = offset
-        if offset == -1:
+        self.selected_day = date.today() + timedelta(days=offset)
+        if offset < 0:
             self.log_action("Day view set: Yesterday")
         else:
-            self.day_offset = 0
             self.log_action("Day view set: Today")
         self.refresh_day_files()
 
-    def refresh_day_files(self):
+    def open_day_picker(self):
+        base_day = self.selected_day or date.today()
+
+        picker = tk.Toplevel(self.root)
+        picker.title("Select Day")
+        picker.transient(self.root)
+        picker.grab_set()
+        picker.resizable(False, False)
+
+        frame = ttk.Frame(picker, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Year").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Month").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frame, text="Day").grid(row=0, column=2, sticky="w", padx=(8, 0))
+
+        year_var = tk.IntVar(value=base_day.year)
+        month_var = tk.IntVar(value=base_day.month)
+        day_var = tk.IntVar(value=base_day.day)
+
+        max_year = date.today().year
+        year_spin = tk.Spinbox(frame, from_=2000, to=max_year, textvariable=year_var, width=8)
+        month_spin = tk.Spinbox(frame, from_=1, to=12, textvariable=month_var, width=6)
+        day_spin = tk.Spinbox(frame, from_=1, to=31, textvariable=day_var, width=6)
+
+        year_spin.grid(row=1, column=0, sticky="w")
+        month_spin.grid(row=1, column=1, sticky="w", padx=(8, 0))
+        day_spin.grid(row=1, column=2, sticky="w", padx=(8, 0))
+
+        def sync_day_limits(*_args):
+            try:
+                y = int(year_var.get())
+                m = int(month_var.get())
+            except (tk.TclError, ValueError):
+                return
+
+            m = max(1, min(12, m))
+            year_var.set(max(2000, min(max_year, y)))
+            month_var.set(m)
+
+            max_day = calendar.monthrange(year_var.get(), month_var.get())[1]
+            current_day = day_var.get()
+            if current_day > max_day:
+                day_var.set(max_day)
+            day_spin.config(to=max_day)
+
+        year_var.trace_add("write", sync_day_limits)
+        month_var.trace_add("write", sync_day_limits)
+        sync_day_limits()
+
+        button_row = ttk.Frame(frame)
+        button_row.grid(row=2, column=0, columnspan=3, pady=(12, 0), sticky="e")
+
+        def apply_selected_day():
+            try:
+                selected = date(int(year_var.get()), int(month_var.get()), int(day_var.get()))
+            except ValueError:
+                messagebox.showerror("Select Day", "Invalid date selected.", parent=picker)
+                return
+
+            if selected > date.today():
+                messagebox.showerror("Select Day", "Future dates are not allowed.", parent=picker)
+                return
+
+            self.selected_day = selected
+            self.log_action(f"Day view set: {selected.strftime('%Y-%m-%d')}")
+            picker.destroy()
+            self.refresh_day_files()
+
+        def choose_today():
+            self.selected_day = date.today()
+            self.log_action("Day view set: Today")
+            picker.destroy()
+            self.refresh_day_files()
+
+        ttk.Button(button_row, text="Today", command=choose_today).pack(side="left", padx=(0, 8))
+        ttk.Button(button_row, text="Apply", command=apply_selected_day).pack(side="left", padx=(0, 8))
+        ttk.Button(button_row, text="Cancel", command=picker.destroy).pack(side="left")
+
+    def refresh_day_files(self, monitor_running: bool | None = None):
         station_name = self.selected_station_name()
 
         previous_selection = self.day_files_list.curselection()
@@ -414,8 +567,13 @@ class RadioControlApp:
             self.day_title_var.set("Day files: select a station")
             return
 
-        _day_label_paths, files = list_day_files(station_name, self.day_offset)
-        day_label, entries = day_file_display_entries(station_name, self.day_offset)
+        running = is_monitor_running() if monitor_running is None else monitor_running
+        _day_label_paths, files = list_day_files(station_name, target_day=self.selected_day)
+        day_label, entries = day_file_display_entries(
+            station_name,
+            target_day=self.selected_day,
+            monitor_running=running,
+        )
         self.day_title_var.set(f"Day files for {station_name}: {day_label}")
 
         if not entries:
@@ -524,6 +682,13 @@ class RadioControlApp:
             self.refresh_job = None
 
         running = is_monitor_running()
+        if running and not self._last_running_state:
+            self.monitor_started_at_ts = time.time()
+        if not running:
+            self.monitor_started_at_ts = None
+        self._last_running_state = running
+
+        self.system_started = running
         self.monitor_state_var.set("Monitor: RUNNING (background)" if running else "Monitor: STOPPED")
         if not self.action_in_progress:
             self.action_progress_var.set("Recording" if running else "Idle")
@@ -535,9 +700,9 @@ class RadioControlApp:
             self.tree.delete(row)
 
         stations = read_stations()
-        total_recording_size = self.total_recordings_size_bytes()
+        self._refresh_recording_size_cache()
         self.station_stats_var.set(f"Stations: {len(stations)}")
-        self.recordings_stats_var.set(f"Recordings: {format_size(total_recording_size)}")
+        self._update_recording_size_display()
 
         if not self.system_started:
             for station_name, _stream in stations:
@@ -562,6 +727,7 @@ class RadioControlApp:
 
         for station_name, _stream in stations:
             status, detail, latest, issue = build_station_status(station_name)
+            status, detail, latest, issue = self._apply_startup_status_grace(status, detail, latest, issue)
             row_id = self.tree.insert("", "end", values=(station_name, status, issue, detail, latest))
             station_row_map[station_name] = row_id
 
@@ -571,7 +737,7 @@ class RadioControlApp:
             self.tree.focus(row_id)
             self.tree.see(row_id)
 
-        self.refresh_day_files()
+        self.refresh_day_files(monitor_running=running)
 
         self.last_refresh_var.set(f"Last refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         self.refresh_job = self.root.after(REFRESH_INTERVAL_MS, self.refresh_statuses)
