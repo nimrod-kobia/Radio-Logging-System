@@ -86,9 +86,9 @@ class RadioControlApp:
         button_bar = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         button_bar.pack(fill="x")
 
-        self.start_button = ttk.Button(button_bar, text="Start Monitor (Background)", command=self.start_monitor_gui)
+        self.start_button = ttk.Button(button_bar, text="Start Recording", command=self.start_monitor_gui)
         self.start_button.pack(side="left")
-        self.stop_button = ttk.Button(button_bar, text="Stop Background Processes", command=self.stop_background_gui)
+        self.stop_button = ttk.Button(button_bar, text="Stop Recording", command=self.stop_background_gui)
         self.stop_button.pack(side="left", padx=8)
         ttk.Label(button_bar, textvariable=self.action_progress_var).pack(side="left", padx=(10, 0))
         ttk.Button(button_bar, text="Open Selected Log", command=self.open_selected_log).pack(side="left", padx=(8, 0))
@@ -462,7 +462,9 @@ class RadioControlApp:
                 self.station_url_var.set(stream)
                 break
 
-        self.refresh_day_files()
+        # Pass already-known running state to avoid re-checking is_monitor_running()
+        # on every click (which could misread stale ffmpeg pids mid-stop)
+        self.refresh_day_files(monitor_running=self.system_started)
 
     def set_day_offset(self, offset: int):
         self.selected_day = date.today() + timedelta(days=offset)

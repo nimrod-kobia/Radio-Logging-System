@@ -21,6 +21,8 @@ from rc_station_store import read_stations
 SERVICE_LOG = LOGS / "service.log"
 METRICS_FILE = LOGS / "metrics.json"
 HEARTBEAT_FILE = LOGS / "service_heartbeat.json"
+RESTART_STATE_FILE = LOGS / "restart_state.json"
+STOP_FLAG_FILE = LOGS / "stopped_intentionally.flag"
 SYNC_SECONDS = 5
 STALE_RESTART_SECONDS = max(300, WRITE_STALE_SECONDS * 3)
 LOG_ROTATE_BYTES = 10 * 1024 * 1024
@@ -119,6 +121,7 @@ class WorkerManager:
         self.workers: dict[str, tuple[subprocess.Popen, object]] = {}
         self.worker_streams: dict[str, str] = {}
         self.restart_state: dict[str, tuple[int, float]] = {}
+        self._load_restart_state()
         self.worker_started_at: dict[str, float] = {}
         self.station_metrics: dict[str, dict[str, object]] = {}
         self.service_started_at = _utc_now_iso()
@@ -130,7 +133,30 @@ class WorkerManager:
     def restart_backoff_seconds(fail_count: int) -> int:
         base = 5
         delay = base * (2 ** max(0, fail_count - 1))
-        return min(300, delay)
+        return min(1800, delay)  # cap at 30 min for persistently-down stations
+
+    def _load_restart_state(self):
+        """Restore persisted restart-backoff counters so they survive service restarts."""
+        try:
+            if RESTART_STATE_FILE.exists():
+                data = json.loads(RESTART_STATE_FILE.read_text(encoding="utf-8"))
+                now_ts = time.time()
+                for name, entry in data.items():
+                    if isinstance(entry, list) and len(entry) == 2:
+                        fail_count, next_retry = int(entry[0]), float(entry[1])
+                        # Discard entries older than 24 h (station may have recovered)
+                        if next_retry > now_ts - 86400:
+                            self.restart_state[name] = (fail_count, next_retry)
+        except Exception:
+            pass
+
+    def _save_restart_state(self):
+        """Persist current restart-backoff counters to disk."""
+        try:
+            payload = {name: list(state) for name, state in self.restart_state.items()}
+            _write_json_atomic(RESTART_STATE_FILE, payload)
+        except Exception:
+            pass
 
     @staticmethod
     def station_paths(station_name: str) -> tuple[Path, Path, Path]:
@@ -213,6 +239,8 @@ class WorkerManager:
             "-nostdin",
             "-loglevel",
             "warning",
+            "-user_agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "-fflags",
             "+discardcorrupt",
             "-err_detect",
@@ -226,7 +254,7 @@ class WorkerManager:
             "-reconnect_on_network_error",
             "1",
             "-reconnect_on_http_error",
-            "4xx,5xx",
+            "5xx",
             "-reconnect_delay_max",
             "15",
             "-rw_timeout",
@@ -555,6 +583,8 @@ class WorkerManager:
                 if station_name in self.restart_state:
                     del self.restart_state[station_name]
 
+        self._save_restart_state()
+
     def stop_all(self):
         for station_name in list(self.workers.keys()):
             self.stop_worker(station_name)
@@ -583,6 +613,11 @@ def main() -> int:
         WorkerManager.log_service(f"Service already running with pid={existing_pid}; exiting pid={current_pid}")
         return 0
 
+    # Refuse to start if the user intentionally stopped recording
+    if STOP_FLAG_FILE.exists():
+        WorkerManager.log_service("Stop flag present; refusing auto-start. Press 'Start Recording' to resume.")
+        return 0
+
     MONITOR_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     MONITOR_PID_FILE.write_text(str(current_pid), encoding="utf-8")
 
@@ -598,6 +633,10 @@ def main() -> int:
 
     try:
         while RUNNING:
+            # Check stop flag each cycle - exits cleanly if user pressed Stop
+            if STOP_FLAG_FILE.exists():
+                manager.log_service("Stop flag detected during run; shutting down.")
+                break
             sync_error: str | None = None
             try:
                 manager.sync()
@@ -605,7 +644,12 @@ def main() -> int:
                 sync_error = f"{exc.__class__.__name__}: {exc}"
                 manager.log_service(f"SYNC_ERROR {exc.__class__.__name__}: {exc}")
             manager.write_observability(sync_error)
-            time.sleep(SYNC_SECONDS)
+            # Sleep in small intervals so stop flag is detected within 0.5s
+            # instead of waiting a full SYNC_SECONDS cycle
+            for _ in range(SYNC_SECONDS * 2):
+                if STOP_FLAG_FILE.exists() or not RUNNING:
+                    break
+                time.sleep(0.5)
     finally:
         manager.stop_all()
         try:

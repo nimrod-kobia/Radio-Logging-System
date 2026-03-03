@@ -8,6 +8,7 @@ STATIONS_FILE = ROOT / "stations.txt"
 RECORDINGS = ROOT / "RadioRecordings"
 LOGS = ROOT / "Runtime"
 MONITOR_PID_FILE = APP_DIR / "monitor.pid"
+STOP_FLAG_FILE = LOGS / "stopped_intentionally.flag"
 
 WRITE_STALE_SECONDS = 180
 WARMUP_SECONDS = 120
