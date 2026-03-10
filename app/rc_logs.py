@@ -6,8 +6,10 @@ from rc_config import LOGS, safe_station_name
 
 ERROR_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"404|not found", re.IGNORECASE), "URL not found (404)"),
-    (re.compile(r"403|401|forbidden|denied", re.IGNORECASE), "Access/authentication issue"),
-    (re.compile(r"502|5\\d\\d|bad gateway|5xx", re.IGNORECASE), "Upstream server error (5xx)"),
+    (re.compile(r"401|unauthorized", re.IGNORECASE), "Authentication required (401)"),
+    (re.compile(r"403|forbidden|denied", re.IGNORECASE), "Access forbidden (403)"),
+    (re.compile(r"503|service unavailable", re.IGNORECASE), "Service unavailable (503)"),
+    (re.compile(r"5\d\d|bad gateway", re.IGNORECASE), "Server error (5xx)"),
     (re.compile(r"timed out|refused|connection|io error|network", re.IGNORECASE), "Network/connectivity issue"),
     (re.compile(r"invalid data|corrupt|decode", re.IGNORECASE), "Corrupt/invalid stream data"),
     (re.compile(r"Failed to open segment|No such file or directory", re.IGNORECASE), "Output path/directory issue"),
@@ -40,7 +42,7 @@ def latest_issue(station_name: str) -> tuple[str, str]:
     for line in reversed(lines):
         cleaned = " ".join(line.split())
         lowered = cleaned.lower()
-        if any(word in lowered for word in ["error", "failed", "forbidden", "404", "502", "timed", "refused", "invalid", "denied"]):
+        if any(word in lowered for word in ["error", "failed", "forbidden", "unauthorized", "unavailable", "404", "401", "403", "502", "503", "timed", "refused", "invalid", "denied"]):
             last_match = cleaned
             break
 

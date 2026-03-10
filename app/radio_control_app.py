@@ -156,16 +156,19 @@ class RadioControlApp:
         self.tree.heading("detail", text="Detail")
         self.tree.heading("latest", text="Latest File")
 
-        self.tree.column("station", width=200, anchor="w")
-        self.tree.column("status", width=120, anchor="w")
-        self.tree.column("issue", width=320, anchor="w")
-        self.tree.column("detail", width=420, anchor="w")
-        self.tree.column("latest", width=220, anchor="w")
+        self.tree.column("station", width=200, anchor="w", stretch=False, minwidth=200)
+        self.tree.column("status", width=120, anchor="w", stretch=False, minwidth=120)
+        self.tree.column("issue", width=320, anchor="w", stretch=False, minwidth=320)
+        self.tree.column("detail", width=420, anchor="w", stretch=False, minwidth=420)
+        self.tree.column("latest", width=220, anchor="w", stretch=False, minwidth=220)
 
         yscroll = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         xscroll = ttk.Scrollbar(table_wrap, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.tree.tag_configure("offline", foreground="#cc0000")
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        self.tree.bind("<Button-1>", self._block_column_resize)
+        self.tree.bind("<B1-Motion>", self._block_column_resize)
 
         xscroll.pack(side="bottom", fill="x")
         self.tree.pack(side="left", fill="both", expand=True)
@@ -191,6 +194,11 @@ class RadioControlApp:
             if values:
                 return str(values[0]).strip()
         return self.station_name_var.get().strip()
+
+    def _block_column_resize(self, event) -> str | None:
+        if self.tree.identify_region(event.x, event.y) == "separator":
+            return "break"
+        return None
 
     def log_action(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -730,7 +738,8 @@ class RadioControlApp:
         for station_name, _stream in stations:
             status, detail, latest, issue = build_station_status(station_name)
             status, detail, latest, issue = self._apply_startup_status_grace(status, detail, latest, issue)
-            row_id = self.tree.insert("", "end", values=(station_name, status, issue, detail, latest))
+            tags = ("offline",) if status == "OFFLINE" else ()
+            row_id = self.tree.insert("", "end", values=(station_name, status, issue, detail, latest), tags=tags)
             station_row_map[station_name] = row_id
 
         if previously_selected_station and previously_selected_station in station_row_map:

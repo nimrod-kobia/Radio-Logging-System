@@ -160,12 +160,25 @@ def day_file_display_entries(
     return day_label, entries
 
 
+_OFFLINE_ISSUE_LABELS = {
+    "Authentication required (401)",
+    "Access forbidden (403)",
+    "Service unavailable (503)",
+    "Server error (5xx)",
+    "URL not found (404)",
+    "Network/connectivity issue",
+}
+
+
 def build_station_status(station_name: str) -> tuple[str, str, str, str]:
     issue_label, issue_reason = latest_issue(station_name)
     issue = f"{issue_label}: {issue_reason}" if issue_label else "-"
+    is_offline_error = issue_label in _OFFLINE_ISSUE_LABELS
 
     latest = latest_file(station_name)
     if latest is None:
+        if is_offline_error:
+            return "OFFLINE", "stream not accessible", "-", issue
         return "STARTING", "no mp3 files yet", "-", "-"
 
     try:
@@ -181,9 +194,13 @@ def build_station_status(station_name: str) -> tuple[str, str, str, str]:
         return "WARMUP", f"{filename} empty for {age_seconds}s", filename, "-"
 
     if size == 0:
+        if is_offline_error:
+            return "OFFLINE", "stream not accessible", filename, issue
         return "NO AUDIO", f"{filename} empty for {age_seconds}s", filename, issue
 
     if age_seconds <= WRITE_STALE_SECONDS:
         return "RECORDING", f"{filename} updated {age_seconds}s ago", filename, "-"
 
+    if is_offline_error:
+        return "OFFLINE", "stream not accessible", filename, issue
     return "NO WRITE", f"{filename} last update {age_seconds}s ago", filename, issue

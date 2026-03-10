@@ -30,6 +30,14 @@ LOG_RETENTION_DAYS = 14
 
 FFMPEG_BIN = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
 
+# Extra HTTP headers required by specific stream sources.
+# Key must match the station name exactly as it appears in stations.txt.
+# Values are injected via ffmpeg's -headers option (CRLF-terminated lines).
+STATION_EXTRA_HEADERS: dict[str, str] = {
+    # worldradio.online proxy drops the connection without a proper Referer.
+    "Komboni_Radio": "Referer: https://worldradio.online/\r\n",
+}
+
 RUNNING = True
 
 
@@ -231,9 +239,9 @@ class WorkerManager:
                         WorkerManager._remove_empty_date_dir(day_dir)
 
     @staticmethod
-    def ffmpeg_command(stream: str, station_dir: Path) -> list[str]:
+    def ffmpeg_command(stream: str, station_dir: Path, extra_headers: str = "") -> list[str]:
         out_pattern = str(station_dir / "%Y" / "%m" / "%d" / "%Y-%m-%d-%H-%M-%S.mp3")
-        return [
+        cmd = [
             str(FFMPEG_BIN),
             "-hide_banner",
             "-nostdin",
@@ -241,6 +249,10 @@ class WorkerManager:
             "warning",
             "-user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        ]
+        if extra_headers:
+            cmd += ["-headers", extra_headers]
+        cmd += [
             "-fflags",
             "+discardcorrupt",
             "-err_detect",
@@ -280,6 +292,7 @@ class WorkerManager:
             "1",
             out_pattern,
         ]
+        return cmd
 
     @staticmethod
     def log_service(message: str):
@@ -386,10 +399,12 @@ class WorkerManager:
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-        log_handle = log_path.open("a", encoding="utf-8")
+        extra_headers = STATION_EXTRA_HEADERS.get(station_name, "")
+
+        log_handle = log_path.open("w", encoding="utf-8")
         try:
             proc = subprocess.Popen(
-                self.ffmpeg_command(stream, station_dir),
+                self.ffmpeg_command(stream, station_dir, extra_headers),
                 stdin=subprocess.DEVNULL,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
