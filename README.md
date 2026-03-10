@@ -150,8 +150,8 @@ One station per line, name and URL separated by `|`:
 
 ```
 Station_Name|https://stream.url/path
-ZNBC_Radio_1|https://eu6.fastcast4u.com/proxy/radio1?mp=/1
-Hot_FM_Lusaka|https://s2.yesstreaming.net:17091/stream
+Radio_1|https://eu6.fastcast67hu.com/proxy/radio1?mp=/57
+Hot_FM|https://s45.yesstreaming.com:89076/streams
 ```
 
 - Names can contain letters, numbers, space, `_`, `-`, `.`, `/`.
