@@ -7,6 +7,7 @@ from rc_config import (
     MAX_STATION_NAME_LEN,
     MAX_STATION_URL_LEN,
     NAME_PATTERN,
+    is_local_or_private_host,
 )
 
 
@@ -33,6 +34,9 @@ def validate_station(name: str, stream: str) -> str | None:
         return "Station name contains invalid characters."
     if not NAME_PATTERN.fullmatch(name):
         return "Station name can only contain letters, numbers, space, _, -, ., /."
+    # Block path traversal components (e.g. '..') in station names.
+    if any(part == ".." for part in name.replace("\\", "/").split("/")):
+        return "Station name contains an invalid path component ('..')."
 
     if not stream:
         return "Stream URL is required."
@@ -44,6 +48,8 @@ def validate_station(name: str, stream: str) -> str | None:
     parsed = urlparse(stream)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return "Stream URL must be a valid http/https URL."
+    if is_local_or_private_host(parsed.hostname or ""):
+        return "Stream URL must point to a public internet address, not a private or local host."
 
     return None
 

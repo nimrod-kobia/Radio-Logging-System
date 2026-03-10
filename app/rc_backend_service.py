@@ -14,6 +14,8 @@ from rc_config import (
     RECORDINGS,
     WARMUP_SECONDS,
     WRITE_STALE_SECONDS,
+    is_local_or_private_host,
+    safe_station_dir,
     safe_station_name,
 )
 from rc_station_store import read_stations
@@ -107,6 +109,9 @@ def _is_valid_stream_url(stream: str) -> bool:
         return False
     if not parsed.netloc:
         return False
+    # Block SSRF: reject URLs targeting private/loopback/link-local addresses.
+    if is_local_or_private_host(parsed.hostname or ""):
+        return False
     return True
 
 
@@ -169,7 +174,7 @@ class WorkerManager:
     @staticmethod
     def station_paths(station_name: str) -> tuple[Path, Path, Path]:
         safe = safe_station_name(station_name)
-        station_dir = RECORDINGS / safe
+        station_dir = safe_station_dir(RECORDINGS, station_name)
         log_path = LOGS / f"{safe}.log"
         pid_path = LOGS / f"{safe}.pid"
         return station_dir, log_path, pid_path
