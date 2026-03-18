@@ -21,7 +21,10 @@ def read_stations() -> list[tuple[str, str]]:
         if not line or "|" not in line:
             continue
         name, stream = line.split("|", 1)
-        stations.append((name.strip(), stream.strip()))
+        name, stream = name.strip(), stream.strip()
+        if validate_station(name, stream) is not None:
+            continue
+        stations.append((name, stream))
     return stations
 
 

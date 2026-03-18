@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -67,7 +68,10 @@ def _check_ffmpeg() -> tuple[bool, str]:
     ffmpeg_path = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
     if ffmpeg_path.exists():
         return True, str(ffmpeg_path)
-    return False, f"Missing at {ffmpeg_path}"
+    found = shutil.which("ffmpeg")
+    if found:
+        return True, found
+    return False, f"Not found at {ffmpeg_path} and not in PATH"
 
 
 def run_preflight_checks() -> PreflightReport:

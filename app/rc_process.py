@@ -1,3 +1,4 @@
+import calendar
 import csv
 import os
 import json
@@ -122,11 +123,12 @@ def _heartbeat_indicates_running(max_age_seconds: int = 20) -> bool:
         return False
 
     try:
-        heartbeat_dt = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%SZ")
+        # Use calendar.timegm to interpret the timestamp as UTC, not local time.
+        heartbeat_epoch = calendar.timegm(time.strptime(updated_at, "%Y-%m-%dT%H:%M:%SZ"))
     except ValueError:
         return False
 
-    age_seconds = time.time() - heartbeat_dt.timestamp()
+    age_seconds = time.time() - heartbeat_epoch
     return age_seconds <= max_age_seconds
 
 

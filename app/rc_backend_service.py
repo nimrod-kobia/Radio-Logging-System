@@ -1,4 +1,5 @@
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -30,7 +31,13 @@ STALE_RESTART_SECONDS = max(300, WRITE_STALE_SECONDS * 3)
 LOG_ROTATE_BYTES = 10 * 1024 * 1024
 LOG_RETENTION_DAYS = 14
 
-FFMPEG_BIN = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
+_FFMPEG_HARDCODED = Path(r"C:\ffmpeg\bin\ffmpeg.exe")
+_ffmpeg_in_path = shutil.which("ffmpeg")
+FFMPEG_BIN = (
+    _FFMPEG_HARDCODED
+    if _FFMPEG_HARDCODED.exists()
+    else (Path(_ffmpeg_in_path) if _ffmpeg_in_path else _FFMPEG_HARDCODED)
+)
 
 # Extra HTTP headers required by specific stream sources.
 # Key must match the station name exactly as it appears in stations.txt.
@@ -616,7 +623,11 @@ def _signal_handler(_signum, _frame):
 
 
 def _ffmpeg_available() -> bool:
-    return FFMPEG_BIN.exists()
+    if FFMPEG_BIN.exists():
+        return True
+    # Re-check PATH in case ffmpeg was installed after this process started
+    found = shutil.which("ffmpeg")
+    return found is not None
 
 
 def main() -> int:
