@@ -288,11 +288,14 @@ def stop_background():
         pass
 
     deadline = time.monotonic() + 20.0
+
+    # ── Step 1 + 2: Kill ffmpeg first, then the backend ────────────────────
+    # These are in their own try/except so that a failure here never prevents
+    # the mandatory final ffmpeg sweep below from running.
     try:
-        # ── Step 1: Kill ALL ffmpeg FIRST (before backend can respawn them) ─
+        # 1. Kill all ffmpeg before the backend can respawn any.
         _run_quiet(["taskkill", "/F", "/IM", "ffmpeg.exe"], timeout=5)
 
-        # ── Step 2: Kill backend by every available method ─────────────────
         # 2a. By stored PID file
         stored_pid = read_monitor_pid()
         if stored_pid and process_exists(stored_pid):
@@ -308,13 +311,18 @@ def stop_background():
 
         # 2d. By WMIC command-line search — catches python.exe rc_backend_service.py
         _kill_python_backend()
+    except (subprocess.TimeoutExpired, OSError):
+        pass
 
-        # ── Step 3: Second ffmpeg sweep (catch any that started between steps) ─
+    # ── Step 3: Final ffmpeg sweep — ALWAYS runs ───────────────────────────
+    # Separated from the block above so it is never skipped by an exception.
+    # Catches any ffmpeg process the backend spawned between step 1 and its death.
+    try:
         time.sleep(0.5)
         _run_quiet(["taskkill", "/F", "/IM", "ffmpeg.exe"], timeout=5)
 
-        # Kill any survivors by PID
-        for _ in range(3):
+        # Retry loop: poll until no ffmpeg processes remain or deadline reached.
+        for _ in range(5):
             if time.monotonic() >= deadline:
                 break
             pids = _ffmpeg_worker_pids()
@@ -324,18 +332,18 @@ def stop_background():
                 if time.monotonic() >= deadline:
                     break
                 _run_quiet(["taskkill", "/F", "/T", "/PID", str(ffmpeg_pid)], timeout=3)
-            time.sleep(0.3)
-
+            time.sleep(0.5)
     except (subprocess.TimeoutExpired, OSError):
         pass
-    finally:
-        for pid_file in LOGS.glob("*.pid"):
-            try:
-                pid_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-        clear_monitor_pid()
-        _mark_heartbeat_stopped()
+
+    # ── Cleanup: always runs ───────────────────────────────────────────────
+    for pid_file in LOGS.glob("*.pid"):
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+    clear_monitor_pid()
+    _mark_heartbeat_stopped()
 
 
 def open_path(path: Path):

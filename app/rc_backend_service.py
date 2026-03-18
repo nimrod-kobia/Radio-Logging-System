@@ -20,6 +20,7 @@ from rc_config import (
     safe_station_name,
 )
 from rc_station_store import read_stations
+from rc_alerter import RadioAlerter
 
 SERVICE_LOG = LOGS / "service.log"
 METRICS_FILE = LOGS / "metrics.json"
@@ -48,6 +49,11 @@ STATION_EXTRA_HEADERS: dict[str, str] = {
 }
 
 RUNNING = True
+
+# Weekly report: fire on Sunday at or after 23:45, once per day.
+_REPORT_WEEKDAY = 6   # Sunday (Monday=0 … Sunday=6)
+_REPORT_HOUR    = 23
+_REPORT_MINUTE  = 45
 
 
 def _utc_now_iso() -> str:
@@ -148,6 +154,8 @@ class WorkerManager:
         self.sync_count = 0
         self.sync_error_count = 0
         self.maintenance_ticks = 0
+        self.alerter = RadioAlerter()
+        self._last_report_date: date | None = None
 
     @staticmethod
     def restart_backoff_seconds(fail_count: int) -> int:
@@ -612,6 +620,45 @@ class WorkerManager:
 
         self._save_restart_state()
 
+        # ── Email alerting ────────────────────────────────────────────────────
+        try:
+            station_statuses = self._collect_station_statuses(stations)
+            self.alerter.evaluate(station_statuses, heartbeat_ok=True)
+        except Exception as _alert_exc:
+            self.log_service(
+                f"ALERTER_EVAL_ERROR {_alert_exc.__class__.__name__}: {_alert_exc}"
+            )
+
+    def _collect_station_statuses(self, stations: list) -> dict:
+        """Return a dict of station_name -> status string for the alerter."""
+        from rc_status import build_station_status
+        result = {}
+        for station_name, _ in stations:
+            try:
+                status, *_ = build_station_status(station_name)
+                result[station_name] = status
+            except Exception:
+                result[station_name] = "ERROR"
+        return result
+
+    def maybe_generate_report(self):
+        """Generate the weekly HTML uptime report on Sunday at 23:45, once per day."""
+        now = datetime.now()
+        if now.weekday() != _REPORT_WEEKDAY:
+            return
+        if now.hour < _REPORT_HOUR or (now.hour == _REPORT_HOUR and now.minute < _REPORT_MINUTE):
+            return
+        today = date.today()
+        if self._last_report_date == today:
+            return
+        try:
+            from rc_report import generate_and_save_weekly_report
+            path = generate_and_save_weekly_report(today)
+            self._last_report_date = today
+            self.log_service(f"REPORT_GENERATED {path}")
+        except Exception as exc:
+            self.log_service(f"REPORT_ERROR {exc.__class__.__name__}: {exc}")
+
     def stop_all(self):
         for station_name in list(self.workers.keys()):
             self.stop_worker(station_name)
@@ -662,12 +709,39 @@ def main() -> int:
         manager.log_service(f"FATAL ffmpeg not found at {FFMPEG_BIN}")
         return 1
 
+    # Record the moment this instance started so we can ignore stop flags that
+    # pre-date this start (e.g. a stale flag synced back by OneDrive/network share
+    # a few seconds after start_monitor() deleted it).
+    service_start_ts = time.time()
+
+    # Delete any stop flag that already exists at boot time — start_monitor() should
+    # have removed it, but a cloud sync may have restored it in the gap.
+    try:
+        if STOP_FLAG_FILE.exists():
+            STOP_FLAG_FILE.unlink(missing_ok=True)
+            manager.log_service("Removed stale stop flag at boot (possible sync artifact)")
+    except OSError:
+        pass
+
     try:
         while RUNNING:
-            # Check stop flag each cycle - exits cleanly if user pressed Stop
+            # Check stop flag each cycle - exits cleanly if user pressed Stop.
+            # Only honour the flag if it was written AFTER this service instance
+            # started; a flag with an older mtime is a stale sync artifact.
             if STOP_FLAG_FILE.exists():
-                manager.log_service("Stop flag detected during run; shutting down.")
-                break
+                try:
+                    flag_mtime = STOP_FLAG_FILE.stat().st_mtime
+                except OSError:
+                    flag_mtime = service_start_ts + 1  # unreadable → treat as fresh
+                if flag_mtime >= service_start_ts - 2.0:
+                    manager.log_service("Stop flag detected during run; shutting down.")
+                    break
+                # Stale flag (older than this service instance) — delete and ignore.
+                try:
+                    STOP_FLAG_FILE.unlink(missing_ok=True)
+                    manager.log_service("Ignored and removed stale stop flag (sync artifact)")
+                except OSError:
+                    pass
             sync_error: str | None = None
             try:
                 manager.sync()
@@ -675,11 +749,19 @@ def main() -> int:
                 sync_error = f"{exc.__class__.__name__}: {exc}"
                 manager.log_service(f"SYNC_ERROR {exc.__class__.__name__}: {exc}")
             manager.write_observability(sync_error)
+            manager.maybe_generate_report()
             # Sleep in small intervals so stop flag is detected within 0.5s
             # instead of waiting a full SYNC_SECONDS cycle
             for _ in range(SYNC_SECONDS * 2):
-                if STOP_FLAG_FILE.exists() or not RUNNING:
+                if not RUNNING:
                     break
+                if STOP_FLAG_FILE.exists():
+                    try:
+                        flag_mtime = STOP_FLAG_FILE.stat().st_mtime
+                    except OSError:
+                        flag_mtime = service_start_ts + 1
+                    if flag_mtime >= service_start_ts - 2.0:
+                        break
                 time.sleep(0.5)
     finally:
         manager.stop_all()

@@ -14,7 +14,6 @@ from rc_preflight import PreflightReport, run_preflight_checks
 from rc_process import is_monitor_running, open_path, start_monitor, stop_background
 from rc_station_store import read_stations, validate_station, write_stations_atomic
 from rc_status import build_station_status, day_file_display_entries, format_size, list_day_files
-
 STARTUP_STATUS_GRACE_SECONDS = 120
 RECORDING_SIZE_REFRESH_SECONDS = 30
 
@@ -23,7 +22,15 @@ class RadioControlApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Brandcomm Radio Control")
-        self.root.geometry("1280x720")
+
+        # Size the window relative to the screen, within sensible bounds.
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        w = min(1600, max(1000, sw - 120))
+        h = min(960, max(620, sh - 120))
+        self.root.geometry(f"{w}x{h}")
+        self.root.minsize(820, 520)
+
         self.refresh_job = None
 
         self.monitor_state_var = tk.StringVar(value="Monitor: checking...")
@@ -57,6 +64,21 @@ class RadioControlApp:
         self._last_running_state = False
         self.monitor_started_at_ts: float | None = None
         self._recording_sizes_last_compute_ts = 0.0
+
+        # Email alert settings
+        self.alert_enabled_var = tk.BooleanVar(value=False)
+        self.alert_smtp_host_var = tk.StringVar(value="smtp.gmail.com")
+        self.alert_smtp_port_var = tk.StringVar(value="465")
+        self.alert_sender_var = tk.StringVar(value="")
+        self.alert_new_recipient_var = tk.StringVar(value="")
+        self.alert_recipients: list = []
+        self.alert_password_var = tk.StringVar(value="")
+        self.alert_threshold_var = tk.StringVar(value="5")
+        self.alert_service_crash_var = tk.BooleanVar(value=False)
+        self.alert_use_ssl_var = tk.BooleanVar(value=True)
+        self._email_config_path = ROOT / "email_config.json"
+        self._alert_recipients_listbox: tk.Listbox | None = None
+        self._load_email_config_vars()
 
         self._build_ui()
         self.run_startup_checks(show_dialog=False)
@@ -93,7 +115,6 @@ class RadioControlApp:
         ttk.Label(button_bar, textvariable=self.action_progress_var).pack(side="left", padx=(10, 0))
         ttk.Button(button_bar, text="Open Selected Log", command=self.open_selected_log).pack(side="left", padx=(8, 0))
         ttk.Button(button_bar, text="Run Self Check", command=lambda: self.run_startup_checks(show_dialog=True)).pack(side="left", padx=(8, 0))
-
         station_bar = ttk.LabelFrame(self.root, text="Station Management", padding=10)
         station_bar.pack(fill="x", padx=10, pady=(0, 8))
 
@@ -109,24 +130,63 @@ class RadioControlApp:
 
         station_bar.grid_columnconfigure(1, weight=1)
 
-        day_bar = ttk.LabelFrame(self.root, text="Selected Station Day View", padding=10)
-        day_bar.pack(fill="x", padx=10, pady=(0, 8))
+        # ── Email Alerts section (compact 2-row layout) ──────────────────────
+        email_bar = ttk.LabelFrame(self.root, text="Email Alerts", padding=(8, 4))
+        email_bar.pack(fill="x", padx=10, pady=(0, 4))
 
-        ttk.Button(day_bar, text="Yesterday", command=lambda: self.set_day_offset(-1)).pack(side="left")
-        ttk.Button(day_bar, text="Today", command=lambda: self.set_day_offset(0)).pack(side="left", padx=6)
-        ttk.Button(day_bar, text="Pick Date", command=self.open_day_picker).pack(side="left", padx=(0, 6))
-        ttk.Button(day_bar, text="Play Selected", command=self.play_selected_day_file).pack(side="left", padx=(8, 0))
-        ttk.Label(day_bar, textvariable=self.day_title_var).pack(side="left", padx=(16, 0))
+        # Row 0 — all SMTP settings + save/test on one line
+        r0 = ttk.Frame(email_bar)
+        r0.pack(fill="x")
+        ttk.Checkbutton(r0, text="Enable", variable=self.alert_enabled_var).pack(side="left")
+        ttk.Label(r0, text="Host:").pack(side="left", padx=(10, 2))
+        ttk.Entry(r0, textvariable=self.alert_smtp_host_var, width=18).pack(side="left")
+        ttk.Label(r0, text="Port:").pack(side="left", padx=(6, 2))
+        ttk.Entry(r0, textvariable=self.alert_smtp_port_var, width=5).pack(side="left")
+        ttk.Checkbutton(r0, text="SSL", variable=self.alert_use_ssl_var).pack(side="left", padx=(6, 0))
+        ttk.Label(r0, text="From:").pack(side="left", padx=(10, 2))
+        ttk.Entry(r0, textvariable=self.alert_sender_var, width=20).pack(side="left")
+        ttk.Label(r0, text="Pass:").pack(side="left", padx=(6, 2))
+        ttk.Entry(r0, textvariable=self.alert_password_var, width=16, show="*").pack(side="left")
+        ttk.Label(r0, text="After:").pack(side="left", padx=(10, 2))
+        ttk.Entry(r0, textvariable=self.alert_threshold_var, width=4).pack(side="left")
+        ttk.Label(r0, text="min").pack(side="left", padx=(2, 6))
+        ttk.Checkbutton(r0, text="Crash alerts", variable=self.alert_service_crash_var).pack(side="left")
+        ttk.Button(r0, text="Save", command=self._save_email_config).pack(side="right")
+        ttk.Button(r0, text="Test", command=self._test_email_alert).pack(side="right", padx=(0, 4))
+
+        # Row 1 — recipients
+        r1 = ttk.Frame(email_bar)
+        r1.pack(fill="x", pady=(4, 0))
+        ttk.Label(r1, text="To:").pack(side="left", padx=(0, 4))
+        ttk.Entry(r1, textvariable=self.alert_new_recipient_var, width=26).pack(side="left")
+        ttk.Button(r1, text="Add", command=self._add_alert_recipient).pack(side="left", padx=(4, 8))
+        self._alert_recipients_listbox = tk.Listbox(
+            r1, height=2, selectmode=tk.SINGLE, exportselection=False
+        )
+        self._alert_recipients_listbox.pack(side="left", fill="x", expand=True)
+        self._refresh_recipients_listbox()
+        ttk.Button(r1, text="Remove", command=self._remove_alert_recipient).pack(side="left", padx=(6, 0))
+
+        day_bar = ttk.LabelFrame(self.root, text="Selected Station Day View", padding=(8, 4))
+        day_bar.pack(fill="x", padx=10, pady=(0, 4))
+
+        day_top = ttk.Frame(day_bar)
+        day_top.pack(fill="x")
+        ttk.Button(day_top, text="Yesterday", command=lambda: self.set_day_offset(-1)).pack(side="left")
+        ttk.Button(day_top, text="Today", command=lambda: self.set_day_offset(0)).pack(side="left", padx=4)
+        ttk.Button(day_top, text="Pick Date", command=self.open_day_picker).pack(side="left", padx=(0, 4))
+        ttk.Button(day_top, text="Play Selected", command=self.play_selected_day_file).pack(side="left", padx=(4, 0))
+        ttk.Label(day_top, textvariable=self.day_title_var).pack(side="left", padx=(12, 0))
 
         day_list_frame = ttk.Frame(day_bar)
-        day_list_frame.pack(fill="both", expand=True, pady=(8, 0))
+        day_list_frame.pack(fill="both", expand=True, pady=(4, 0))
 
         day_yscroll = ttk.Scrollbar(day_list_frame, orient="vertical")
         day_xscroll = ttk.Scrollbar(day_list_frame, orient="horizontal")
 
         self.day_files_list = tk.Listbox(
             day_list_frame,
-            height=5,
+            height=3,
             yscrollcommand=day_yscroll.set,
             xscrollcommand=day_xscroll.set,
         )
@@ -156,11 +216,11 @@ class RadioControlApp:
         self.tree.heading("detail", text="Detail")
         self.tree.heading("latest", text="Latest File")
 
-        self.tree.column("station", width=200, anchor="w", stretch=False, minwidth=200)
-        self.tree.column("status", width=120, anchor="w", stretch=False, minwidth=120)
-        self.tree.column("issue", width=320, anchor="w", stretch=False, minwidth=320)
-        self.tree.column("detail", width=420, anchor="w", stretch=False, minwidth=420)
-        self.tree.column("latest", width=220, anchor="w", stretch=False, minwidth=220)
+        self.tree.column("station", width=200, anchor="w", stretch=False, minwidth=140)
+        self.tree.column("status", width=110, anchor="w", stretch=False, minwidth=90)
+        self.tree.column("issue", width=300, anchor="w", stretch=True, minwidth=140)
+        self.tree.column("detail", width=380, anchor="w", stretch=True, minwidth=160)
+        self.tree.column("latest", width=200, anchor="w", stretch=False, minwidth=140)
 
         yscroll = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         xscroll = ttk.Scrollbar(table_wrap, orient="horizontal", command=self.tree.xview)
@@ -773,6 +833,141 @@ class RadioControlApp:
             self.power_manager.disable_keep_awake()
 
         self.root.destroy()
+
+    # ── Email alert settings methods ──────────────────────────────────────────
+
+    def _load_email_config_vars(self) -> None:
+        """Populate alert StringVars from email_config.json if it exists."""
+        try:
+            if self._email_config_path.exists():
+                import json as _json
+                cfg = _json.loads(self._email_config_path.read_text(encoding="utf-8"))
+                self.alert_enabled_var.set(bool(cfg.get("enabled", False)))
+                self.alert_smtp_host_var.set(str(cfg.get("smtp_host", "smtp.gmail.com")))
+                self.alert_smtp_port_var.set(str(cfg.get("smtp_port", 465)))
+                self.alert_sender_var.set(str(cfg.get("sender_email", "")))
+                self.alert_password_var.set(str(cfg.get("app_password", "")))
+                self.alert_threshold_var.set(str(cfg.get("alert_threshold_minutes", 5)))
+                self.alert_service_crash_var.set(bool(cfg.get("alert_on_service_crash", False)))
+                self.alert_use_ssl_var.set(bool(cfg.get("use_ssl", True)))
+                self.alert_recipients = list(cfg.get("recipient_emails", []))
+        except Exception:
+            pass
+
+    def _refresh_recipients_listbox(self) -> None:
+        """Sync the Listbox widget with self.alert_recipients."""
+        if self._alert_recipients_listbox is None:
+            return
+        self._alert_recipients_listbox.delete(0, tk.END)
+        for email in self.alert_recipients:
+            self._alert_recipients_listbox.insert(tk.END, email)
+
+    def _add_alert_recipient(self) -> None:
+        email = self.alert_new_recipient_var.get().strip()
+        if "@" not in email or "." not in email.split("@")[-1]:
+            messagebox.showwarning("Email Alerts", "Please enter a valid email address.")
+            return
+        if email.lower() in [r.lower() for r in self.alert_recipients]:
+            messagebox.showwarning("Email Alerts", f"{email} is already in the list.")
+            return
+        self.alert_recipients.append(email)
+        self._refresh_recipients_listbox()
+        self.alert_new_recipient_var.set("")
+
+    def _remove_alert_recipient(self) -> None:
+        if self._alert_recipients_listbox is None:
+            return
+        selection = self._alert_recipients_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Email Alerts", "Select a recipient to remove.")
+            return
+        index = selection[0]
+        del self.alert_recipients[index]
+        self._refresh_recipients_listbox()
+
+    def _save_email_config(self) -> None:
+        """Write current alert settings to email_config.json atomically."""
+        try:
+            import json as _json, os as _os
+            threshold_raw = self.alert_threshold_var.get().strip()
+            threshold = int(threshold_raw) if threshold_raw.isdigit() and int(threshold_raw) > 0 else 5
+            port_raw = self.alert_smtp_port_var.get().strip()
+            port = int(port_raw) if port_raw.isdigit() else 465
+
+            cfg = {
+                "enabled": self.alert_enabled_var.get(),
+                "smtp_host": self.alert_smtp_host_var.get().strip(),
+                "smtp_port": port,
+                "use_ssl": self.alert_use_ssl_var.get(),
+                "sender_email": self.alert_sender_var.get().strip(),
+                "recipient_emails": list(self.alert_recipients),
+                "app_password": self.alert_password_var.get(),
+                "alert_threshold_minutes": threshold,
+                "alert_on_service_crash": self.alert_service_crash_var.get(),
+            }
+
+            temp = self._email_config_path.with_suffix(".json.tmp")
+            temp.write_text(_json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            _os.replace(temp, self._email_config_path)
+            self.log_action("Email alert settings saved")
+        except Exception as exc:
+            messagebox.showerror("Email Settings", f"Failed to save settings:\n{exc}")
+
+    def _test_email_alert(self) -> None:
+        """Save settings then fire a test email on a background thread."""
+        self._save_email_config()
+        if not self.alert_recipients:
+            messagebox.showwarning("Email Test", "Add at least one recipient before testing.")
+            return
+        self.log_action("Sending test email...")
+
+        def _worker():
+            try:
+                import json as _j, smtplib, ssl
+                from email.mime.text import MIMEText
+                from email.mime.multipart import MIMEMultipart
+
+                cfg = _j.loads(self._email_config_path.read_text(encoding="utf-8"))
+                sender = cfg.get("sender_email", "")
+                recipients = cfg.get("recipient_emails", [])
+                password = cfg.get("app_password", "")
+                smtp_host = cfg.get("smtp_host", "smtp.gmail.com")
+                smtp_port = int(cfg.get("smtp_port", 465))
+                use_ssl = bool(cfg.get("use_ssl", True))
+
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = "[Radio Alert] Test email from Radio Control"
+                msg["From"] = sender
+                msg["To"] = ", ".join(recipients)
+                msg.attach(MIMEText(
+                    "This is a test email from the Radio Control alert system.\n"
+                    "If you received this, your email settings are correct.",
+                    "plain", "utf-8"
+                ))
+                context = ssl.create_default_context()
+                if use_ssl:
+                    with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=15) as s:
+                        s.login(sender, password)
+                        s.sendmail(sender, recipients, msg.as_string())
+                else:
+                    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as s:
+                        s.ehlo()
+                        s.starttls(context=context)
+                        s.ehlo()
+                        s.login(sender, password)
+                        s.sendmail(sender, recipients, msg.as_string())
+
+                self.root.after(0, lambda: (
+                    self.log_action("Test email sent successfully"),
+                    messagebox.showinfo("Email Test", "Test email sent successfully!")
+                ))
+            except Exception as exc:
+                self.root.after(0, lambda e=exc: (
+                    self.log_action(f"Test email failed: {e}"),
+                    messagebox.showerror("Email Test", f"Failed to send test email:\n{e}")
+                ))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
 
 def main():
