@@ -256,22 +256,26 @@ def start_monitor() -> str | None:
 
 
 def _kill_python_backend():
-    """Kill python/py processes running rc_backend_service.py by command-line match."""
+    """Kill python processes running rc_backend_service.py by command-line match.
+
+    Uses PowerShell + Get-WmiObject instead of the deprecated wmic.exe,
+    which is removed in some Windows 11 builds.
+    """
     try:
         result = subprocess.run(
-            ["wmic", "process", "where",
-             "CommandLine like '%rc_backend_service%'",
-             "get", "ProcessId", "/format:csv"],
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "Get-WmiObject Win32_Process | "
+                "Where-Object { $_.CommandLine -like '*rc_backend_service.py*' } | "
+                "Select-Object -ExpandProperty ProcessId",
+            ],
             capture_output=True, text=True, timeout=6,
             creationflags=_win_hidden_flags(),
         )
         for line in (result.stdout or "").splitlines():
             line = line.strip()
-            if not line or "ProcessId" in line or line.startswith("Node"):
-                continue
-            parts = line.split(",")
-            if parts and parts[-1].strip().isdigit():
-                pid = int(parts[-1].strip())
+            if line.isdigit():
+                pid = int(line)
                 if pid > 0:
                     _run_quiet(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=3)
     except (subprocess.TimeoutExpired, OSError):

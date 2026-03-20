@@ -16,7 +16,7 @@ WARMUP_SECONDS = 120
 REFRESH_INTERVAL_MS = 5000
 MAX_STATION_NAME_LEN = 80
 MAX_STATION_URL_LEN = 1000
-NAME_PATTERN = re.compile(r"^[A-Za-z0-9 _./\-]+$")
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9 _.\-]+$")
 
 # Hostnames that unambiguously resolve to loopback / link-local.
 _PRIVATE_HOST_RE = re.compile(

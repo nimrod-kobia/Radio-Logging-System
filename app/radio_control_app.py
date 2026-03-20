@@ -909,6 +909,23 @@ class RadioControlApp:
             temp = self._email_config_path.with_suffix(".json.tmp")
             temp.write_text(_json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
             _os.replace(temp, self._email_config_path)
+            # Restrict the config file to the current Windows user only so that
+            # other local accounts cannot read the stored app password.
+            try:
+                import subprocess as _sp
+                _username = _os.environ.get("USERNAME", "")
+                if _username:
+                    _sp.run(
+                        [
+                            "icacls", str(self._email_config_path),
+                            "/inheritance:r",
+                            "/grant:r", f"{_username}:F",
+                        ],
+                        capture_output=True, timeout=5,
+                        creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0),
+                    )
+            except Exception:
+                pass
             self.log_action("Email alert settings saved")
         except Exception as exc:
             messagebox.showerror("Email Settings", f"Failed to save settings:\n{exc}")

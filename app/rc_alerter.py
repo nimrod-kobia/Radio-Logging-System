@@ -30,6 +30,10 @@ ALERT_STATE_FILE: Path = LOGS / "alert_state.json"
 # Statuses that constitute a "down" incident
 DOWN_STATUSES: frozenset = frozenset({"OFFLINE", "NO WRITE", "NO AUDIO", "ERROR"})
 
+# Transient statuses during worker restart — preserve the incident but don't
+# clear it, since the station may be back in a DOWN state within seconds.
+TRANSIENT_STATUSES: frozenset = frozenset({"STARTING", "WARMUP"})
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +97,9 @@ class RadioAlerter:
         self._heartbeat_incident_active: bool = False
         self._heartbeat_first_stale_ts: Optional[float] = None
         self._heartbeat_alerted: bool = False
+        self._config_cache: Optional[dict] = None
+        self._config_mtime: float = 0.0
+        self._email_sem = threading.Semaphore(4)  # max 4 concurrent SMTP sends
         self._load_state()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -123,16 +130,27 @@ class RadioAlerter:
     # ── Config loading ────────────────────────────────────────────────────────
 
     def _load_config(self) -> Optional[dict]:
-        """Re-read email_config.json on every call for live GUI changes."""
+        """Re-read email_config.json only when its mtime changes.
+
+        This reduces disk I/O (was re-reading every 5-second cycle) and
+        shrinks the race window during which a rogue process could swap the
+        config file between the read and the SMTP send.
+        """
         try:
             if not EMAIL_CONFIG_FILE.exists():
+                self._config_cache = None
                 return None
+            mtime = EMAIL_CONFIG_FILE.stat().st_mtime
+            if self._config_cache is not None and mtime == self._config_mtime:
+                return self._config_cache
             cfg = json.loads(EMAIL_CONFIG_FILE.read_text(encoding="utf-8"))
             if not isinstance(cfg, dict):
-                return None
+                return self._config_cache  # keep last known-good config
+            self._config_cache = cfg
+            self._config_mtime = mtime
             return cfg
         except Exception:
-            return None
+            return self._config_cache  # return stale cache rather than None on transient error
 
     # ── Station incident lifecycle ────────────────────────────────────────────
 
@@ -168,11 +186,15 @@ class RadioAlerter:
                 else:
                     incident = self._incidents.get(station_name)
                     if incident is not None:
-                        if incident.alerted and not incident.recovered:
-                            self._send_async(cfg, "recovery", station_name, status, 0.0)
-                            incident.recovered = True
-                        if not incident.alerted or incident.recovered:
-                            del self._incidents[station_name]
+                        # STARTING/WARMUP are transient states during worker restarts.
+                        # Leave the incident intact so the elapsed timer keeps running;
+                        # clearing it here would reset first_seen_ts and prevent alerts.
+                        if status not in TRANSIENT_STATUSES:
+                            if incident.alerted and not incident.recovered:
+                                self._send_async(cfg, "recovery", station_name, status, 0.0)
+                                incident.recovered = True
+                            if not incident.alerted or incident.recovered:
+                                del self._incidents[station_name]
 
     # ── Heartbeat incident lifecycle ──────────────────────────────────────────
 
@@ -212,11 +234,28 @@ class RadioAlerter:
         status: str,
         elapsed_seconds: float,
     ) -> None:
-        """Build and send email on a daemon thread — never blocks the sync loop."""
+        """Build and send email on a daemon thread — never blocks the sync loop.
+
+        A semaphore caps concurrent SMTP connections at 4 so a burst of
+        simultaneous station failures cannot exhaust file descriptors.
+        """
         subject, body = self._build_message(alert_type, station_name, status, elapsed_seconds)
+
+        if not self._email_sem.acquire(blocking=False):
+            _log_service_message(
+                f"ALERTER_SEND_SKIP {alert_type} for {station_name}: "
+                "too many concurrent sends in flight"
+            )
+            return
+
+        def _worker():
+            try:
+                self._send_email(cfg, subject, body)
+            finally:
+                self._email_sem.release()
+
         thread = threading.Thread(
-            target=self._send_email,
-            args=(cfg, subject, body),
+            target=_worker,
             daemon=True,
             name=f"alerter-{alert_type}-{station_name}",
         )
@@ -318,7 +357,10 @@ class RadioAlerter:
 
         except Exception as exc:
             try:
-                _log_service_message(f"ALERTER_SEND_FAIL {exc.__class__.__name__}: {exc}")
+                _log_service_message(
+                    f"ALERTER_SEND_FAIL {exc.__class__.__name__}: {exc} "
+                    f"| subject={subject!r} | host={smtp_host}:{smtp_port}"
+                )
             except Exception:
                 pass
 

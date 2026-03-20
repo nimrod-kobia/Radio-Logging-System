@@ -1,6 +1,7 @@
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -122,9 +123,23 @@ def _is_valid_stream_url(stream: str) -> bool:
         return False
     if not parsed.netloc:
         return False
+    hostname = parsed.hostname or ""
     # Block SSRF: reject URLs targeting private/loopback/link-local addresses.
-    if is_local_or_private_host(parsed.hostname or ""):
+    if is_local_or_private_host(hostname):
         return False
+    # DNS pre-resolution: resolve the hostname now and verify every returned IP
+    # is public.  This closes the DNS-rebinding window — an attacker cannot
+    # register a domain that currently resolves to a public IP and then flip it
+    # to 127.x/10.x after this check passes.
+    if hostname:
+        try:
+            records = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+            for _, _, _, _, sockaddr in records:
+                if is_local_or_private_host(sockaddr[0]):
+                    return False
+        except OSError:
+            # Cannot resolve → ffmpeg won't be able to connect either; reject.
+            return False
     return True
 
 
@@ -272,6 +287,10 @@ class WorkerManager:
         ]
         if extra_headers:
             cmd += ["-headers", extra_headers]
+        # Whitelist only the protocols needed for HTTP/HTTPS streams.
+        # This prevents ffmpeg from following redirects to dangerous protocols
+        # (file://, pipe://, data:, ftp://, rtsp://, etc.).
+        cmd += ["-protocol_whitelist", "http,https,tcp,tls,crypto"]
         cmd += [
             "-fflags",
             "+discardcorrupt",

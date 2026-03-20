@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find c:/Users/HP/OneDrive/Desktop/Test -type f \\\\\\(-name *.json -o -name *.txt -o -name *.cfg -o -name *.ini -o -name *.env \\\\\\))"
+    ]
+  }
+}

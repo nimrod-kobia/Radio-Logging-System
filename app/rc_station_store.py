@@ -36,9 +36,9 @@ def validate_station(name: str, stream: str) -> str | None:
     if "|" in name or "\n" in name or "\r" in name:
         return "Station name contains invalid characters."
     if not NAME_PATTERN.fullmatch(name):
-        return "Station name can only contain letters, numbers, space, _, -, ., /."
-    # Block path traversal components (e.g. '..') in station names.
-    if any(part == ".." for part in name.replace("\\", "/").split("/")):
+        return "Station name can only contain letters, numbers, space, _, -, ."
+    # Block path traversal: reject any name containing '..' as a substring.
+    if ".." in name:
         return "Station name contains an invalid path component ('..')."
 
     if not stream:
